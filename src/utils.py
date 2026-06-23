@@ -26,10 +26,16 @@ def create_model(config: Config, device: torch.device | None = None) -> nn.Modul
         market_state_size=5,
     ).to(device)
     if is_distributed():
-        model = DistributedDataParallel(
-            model,
-            device_ids=[device.index] if device.type == "cuda" else None,
-        )
+        # PyTorch's DistributedDataParallel does NOT support MPS — fail-fast
+        # with a clear message rather than crashing inside the constructor
+        # with NCCL/Gloo complaints when someone runs `torchrun` on a Mac.
+        if device.type != "cuda":
+            msg = (
+                f"DDP requires CUDA. Got device={device}. "
+                "Run without torchrun on Apple Silicon, or use a CUDA host."
+            )
+            raise RuntimeError(msg)
+        model = DistributedDataParallel(model, device_ids=[device.index])
     return model
 
 

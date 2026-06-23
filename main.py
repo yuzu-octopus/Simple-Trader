@@ -1,4 +1,5 @@
 import argparse
+import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,33 @@ from src.utils import load_threshold
 from trade import build_layout, make_trade_table
 from training.threshold import run_threshold_optimization
 from training.train import run_training
+
+
+def _fold_metadata(config: Config) -> dict:
+    """Fingerprint the config knobs that influence fold slicing + feature shape.
+
+    Used to validate cached fold npz files on load — stale folds produce
+    silently-wrong training runs otherwise.
+    """
+    return {
+        "wf_window_size": config.wf_window_size,
+        "wf_val_size": config.wf_val_size,
+        "wf_test_size": config.wf_test_size,
+        "wf_step_size": config.wf_step_size,
+        "train_start": config.train_start,
+        "test_end": config.test_end,
+        "label_max_return": config.label_max_return,
+        "n_features": config.n_features,
+    }
+
+
+def _folds_match_config(config: Config, fold_dir: Path) -> bool:
+    meta_path = fold_dir / "folds_meta.json"
+    if not meta_path.exists():
+        return False
+    expected = _fold_metadata(config)
+    actual = json.loads(meta_path.read_text())
+    return actual == expected
 
 
 def prepare_walk_forward_splits(
@@ -61,26 +89,32 @@ def prepare_walk_forward_splits(
         test_idx = np.array([val_end < d <= test_end for d in date_objs])
         folds.append((train_idx, val_idx, test_idx, f"{current.year}-{test_end.year}"))
         current += pd.DateOffset(years=config.wf_step_size)
-    Path(config.features_path).mkdir(parents=True, exist_ok=True)
+    fold_dir = Path(config.features_path)
+    fold_dir.mkdir(parents=True, exist_ok=True)
     for i, (tr, va, te, _label) in enumerate(folds):
         np.savez(
-            f"{config.features_path}/fold_{i}_train.npz",
+            f"{fold_dir}/fold_{i}_train.npz",
             features=features[tr],
             targets=targets[tr],
             market_state=market_state[tr],
         )
         np.savez(
-            f"{config.features_path}/fold_{i}_val.npz",
+            f"{fold_dir}/fold_{i}_val.npz",
             features=features[va],
             targets=targets[va],
             market_state=market_state[va],
         )
         np.savez(
-            f"{config.features_path}/fold_{i}_test.npz",
+            f"{fold_dir}/fold_{i}_test.npz",
             features=features[te],
             targets=targets[te],
             market_state=market_state[te],
         )
+    # Sidecar fingerprint so a future run can detect config changes that
+    # would invalidate the cached fold slices.
+    (fold_dir / "folds_meta.json").write_text(
+        json.dumps(_fold_metadata(config), indent=2)
+    )
     print(f"  Created {len(folds)} walk-forward folds")
     return len(folds)
 
@@ -435,11 +469,14 @@ def main() -> None:
 
     if args.mode == "train":
         if args.walk_forward and n_folds == 0:
-            # Check if fold files already exist
+            # Reuse cached folds only if their config fingerprint still matches
+            # the current config; otherwise rebuild so we don't silently train
+            # on stale windows.
             fold_dir = Path(config.features_path)
-            existing_folds = list(fold_dir.glob("fold_*_train.npz"))
-            if existing_folds:
+            existing_folds = sorted(fold_dir.glob("fold_*_train.npz"))
+            if existing_folds and _folds_match_config(config, fold_dir):
                 n_folds = len(existing_folds)
+                print(f"  Reusing {n_folds} cached walk-forward folds")
             else:
                 raw_data = fetch_stock_data(
                     config.tickers,
@@ -447,15 +484,15 @@ def main() -> None:
                     config.test_end,
                     config.raw_data_path,
                 )
-            features, tickers, dates = build_feature_matrix(raw_data)
-            config.tickers = tickers
-            targets = build_targets(
-                raw_data, config.tickers, dates, config.label_max_return
-            )
-            market_state = compute_market_state(raw_data, dates)
-            n_folds = prepare_walk_forward_splits(
-                features, targets, market_state, dates, config
-            )
+                features, tickers, dates = build_feature_matrix(raw_data)
+                config.tickers = tickers
+                targets = build_targets(
+                    raw_data, config.tickers, dates, config.label_max_return
+                )
+                market_state = compute_market_state(raw_data, dates)
+                n_folds = prepare_walk_forward_splits(
+                    features, targets, market_state, dates, config
+                )
 
         pretrain_path = config.pretrain_weights_path if args.pretrain else None
         fold_count = n_folds if args.walk_forward else 1

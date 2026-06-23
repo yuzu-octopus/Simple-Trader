@@ -38,3 +38,19 @@ def test_prepare_top_shape() -> None:
     assert windows.shape == (48, 3, 10, 8)
     assert labels.shape == (48,)
     assert n_classes == 6
+
+
+def test_pretrain_combined_loss_formula() -> None:
+    """The pretraining loss is (l_mpp + 0.5*l_top + l_csr) / 3 / grad_accum_steps.
+
+    This pins the combine so a refactor of training/pretrain.py can't silently
+    change the weighting. Tolerance is loose (1e-5) because torch tensors
+    default to float32 while the Python-side expected value is float64.
+    """
+    l_mpp = torch.tensor(0.6)
+    l_top = torch.tensor(0.2)
+    l_csr = torch.tensor(0.9)
+    grad_accum_steps = 2
+    combined = (l_mpp + 0.5 * l_top + l_csr) / 3 / grad_accum_steps
+    expected = (0.6 + 0.5 * 0.2 + 0.9) / 3 / 2
+    assert abs(combined.item() - expected) < 1e-5

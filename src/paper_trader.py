@@ -170,6 +170,10 @@ class PaperTrader:
                     trades.append((ticker, 0, f"BUY_FAIL:{e}"))
 
             elif signal == "SELL" and has_pos:
+                # floor (not round): for fractional shares, rounding UP could
+                # flip a short into a long (e.g., covering 3.9 of a -4 short
+                # with round(3.9) = 4 would buy 4, leaving a spurious +0.1 long
+                # position). floor leaves any fractional remainder in place.
                 held = math.floor(abs(pos["qty"]))
                 qty = (
                     min(held, self.config.trade_sell_qty)

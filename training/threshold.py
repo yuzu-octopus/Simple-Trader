@@ -2,7 +2,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.linear_model import LogisticRegression
 
 from config import Config
 from src.utils import load_model, load_scaler, scale_features
@@ -26,18 +25,27 @@ def optimize_threshold(
     with torch.no_grad():
         scores = model(val_t.to(device)).cpu().numpy()
 
-    flat_scores = scores.flatten()
-    flat_targets = val_targets.flatten()
-    mask = np.abs(flat_targets) > 1e-6
-    cal_scores = flat_scores.copy()
-    if mask.sum() > 10:
-        lr = LogisticRegression(C=1.0, class_weight="balanced", max_iter=1000)
-        lr.fit(flat_scores[mask].reshape(-1, 1), (flat_targets[mask] > 0).astype(int))
-        cal_probs = lr.predict_proba(flat_scores.reshape(-1, 1))[:, 1]
-        cal_scores = 2.0 * cal_probs - 1.0
-    cal_scores = cal_scores.reshape(scores.shape)
+    # Use raw model outputs directly. The previous algorithm fit a calibrator
+    # (Isotonic -> Logistic / Platt) on the val set and then rescaled its output
+    # back to [-1, 1] via `2*probs - 1`, which collapsed the dynamic range and
+    # made historical thresholds pick up noise. Raw scores preserve the model's
+    # intended confidence range, and Sharpe is scale-invariant for our signal-
+    # weighting (mean of signals, not sum), so optimizing against raw scores
+    # is comparable AND preserves interpretability.
+    cal_scores = scores
 
-    candidates = np.arange(0, 0.5, 0.01)
+    # Adapt the threshold scan to the actual score distribution. Raw model
+    # outputs aren't bounded — with no Platt rescale, scores may span
+    # [-k, +k] for some k > 1. Search at least up to the observed max-abs,
+    # capped at 2.0 to keep the scan bounded on pathological score scales.
+    max_abs = float(np.abs(scores).max())
+    upper = max(0.5, min(max_abs, 2.0))
+    if max_abs > 2.0:
+        print(
+            f"Note: raw scores hit {max_abs:.2f}; threshold scan capped at 2.0. "
+            "Consider retraining or rescaling."
+        )
+    candidates = np.arange(0.0, upper + 0.01, 0.01)
     best_buy = best_sell = 0.0
     best_sharpe = -float("inf")
 

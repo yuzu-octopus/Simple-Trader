@@ -63,8 +63,9 @@ def test_optimize_threshold_runs() -> None:
     val_features = np.random.randn(20, 5, 120)
     val_targets = np.random.randn(20, 5)
     buy_t, sell_t = optimize_threshold(Config(), model, val_features, val_targets)
-    assert 0 <= buy_t < 0.5
-    assert 0 <= sell_t < 0.5
+    # Threshold scan now adapts to observed score range, capped at 2.0.
+    assert 0 <= buy_t <= 2.0
+    assert 0 <= sell_t <= 2.0
 
 
 def test_run_training_imports() -> None:
