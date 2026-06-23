@@ -8,6 +8,7 @@ def _safe_str(data: str) -> str:
 
 
 def generate_colab_script(args: argparse.Namespace) -> str:
+    mode = args.mode
     loss = args.loss
     seeds = args.seeds
     grad_accum = args.grad_accum
@@ -18,6 +19,8 @@ def generate_colab_script(args: argparse.Namespace) -> str:
         extra += " --force-features"
     if args.resume:
         extra += " --resume"
+    if args.pretrain:
+        extra += " --pretrain"
 
     files = {}
     for p in [
@@ -44,7 +47,7 @@ def generate_colab_script(args: argparse.Namespace) -> str:
     flaglist = [
         "main.py",
         "--mode",
-        "train",
+        mode,
         "--loss",
         loss,
         "--seeds",
