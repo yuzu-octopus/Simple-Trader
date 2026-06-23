@@ -7,11 +7,11 @@ import numpy as np
 import torch
 from torch import nn, optim
 from torch.nn.functional import cross_entropy, mse_loss
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
 from tqdm import tqdm
 
-from config import Config, get_device
-from src.utils import create_model
+from config import Config, get_device, get_rank, is_distributed
+from src.utils import create_model, unwrap_model
 from training.train import listnet_loss, margin_ranking_loss, msrr_loss
 
 PRETRAIN_CHECKPOINT_PATH = "data/models/pretrain/checkpoint.pt"
@@ -77,55 +77,77 @@ def pretrain(
     targets: np.ndarray,
     market_state: np.ndarray | None = None,
     loss_mode: str = "mse",
-    loss_weights=(1.0, 0.5, 1.0),
     resume: bool = False,
     grad_accum_steps: int = 1,
-):
+) -> nn.Module:
     device = get_device()
     model = create_model(config, device)
-    top_head = TemporalOrderHead(
+    top_head: nn.Module = TemporalOrderHead(
         config.pretrain_top_n_days, math.factorial(config.pretrain_top_n_days)
     ).to(device)
+    if is_distributed() and device.type == "cuda":
+        top_head = nn.parallel.DistributedDataParallel(
+            top_head, device_ids=[device.index]
+        )
 
     mpp_x, mpp_y, mpp_mask = prepare_mpp(features, targets, config.pretrain_mask_ratio)
     top_x, top_y, _top_nc = prepare_top(features, config.pretrain_top_n_days)
     mkt = market_state if market_state is not None else np.zeros((len(features), 5))
     mkt_t = torch.tensor(mkt, dtype=torch.float32)
 
+    # Wrap arrays as TensorDatasets so DistributedSampler accepts them (its signature
+    # rejects raw tensors/ndarrays) and so save_/load_ is symmetric.
+    mpp_dataset = TensorDataset(
+        torch.tensor(mpp_x, dtype=torch.float32),
+        torch.tensor(mpp_y, dtype=torch.float32),
+        torch.tensor(mpp_mask, dtype=torch.bool),
+        mkt_t,
+    )
+    top_dataset = TensorDataset(
+        torch.tensor(top_x, dtype=torch.float32),
+        torch.tensor(top_y, dtype=torch.long),
+    )
+    csr_dataset = TensorDataset(
+        torch.tensor(features, dtype=torch.float32),
+        torch.tensor(targets, dtype=torch.float32),
+        mkt_t,
+    )
+
+    mpp_sampler: DistributedSampler | None = (
+        DistributedSampler(mpp_dataset, shuffle=True) if is_distributed() else None
+    )
+    top_sampler: DistributedSampler | None = (
+        DistributedSampler(top_dataset, shuffle=True) if is_distributed() else None
+    )
+    csr_sampler: DistributedSampler | None = (
+        DistributedSampler(csr_dataset, shuffle=True) if is_distributed() else None
+    )
+
     mpp_loader = DataLoader(
-        TensorDataset(
-            torch.tensor(mpp_x, dtype=torch.float32),
-            torch.tensor(mpp_y, dtype=torch.float32),
-            torch.tensor(mpp_mask, dtype=torch.bool),
-            mkt_t,
-        ),
+        mpp_dataset,
         batch_size=config.batch_size,
-        shuffle=True,
+        sampler=mpp_sampler,
+        shuffle=mpp_sampler is None,
         drop_last=True,
     )
-
     top_loader = DataLoader(
-        TensorDataset(
-            torch.tensor(top_x, dtype=torch.float32),
-            torch.tensor(top_y, dtype=torch.long),
-        ),
+        top_dataset,
         batch_size=config.batch_size,
-        shuffle=True,
+        sampler=top_sampler,
+        shuffle=top_sampler is None,
         drop_last=True,
     )
-
     csr_loader = DataLoader(
-        TensorDataset(
-            torch.tensor(features, dtype=torch.float32),
-            torch.tensor(targets, dtype=torch.float32),
-            mkt_t,
-        ),
+        csr_dataset,
         batch_size=config.batch_size,
-        shuffle=True,
+        sampler=csr_sampler,
+        shuffle=csr_sampler is None,
         drop_last=True,
     )
 
-    all_params = list(model.parameters()) + list(top_head.parameters())
+    all_params = list(unwrap_model(model).parameters()) + list(
+        unwrap_model(top_head).parameters()
+    )
     optimizer = optim.AdamW(
         all_params, lr=config.pretrain_lr, weight_decay=config.weight_decay
     )
@@ -141,8 +163,8 @@ def pretrain(
         ckpt = torch.load(
             PRETRAIN_CHECKPOINT_PATH, weights_only=True, map_location=device
         )
-        model.load_state_dict(ckpt["model_state_dict"])
-        top_head.load_state_dict(ckpt["top_head_state_dict"])
+        unwrap_model(model).load_state_dict(ckpt["model_state_dict"])
+        unwrap_model(top_head).load_state_dict(ckpt["top_head_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         resume_epoch = ckpt["epoch"]
@@ -160,6 +182,12 @@ def pretrain(
     )
 
     for epoch in epoch_bar:
+        if mpp_sampler is not None:
+            mpp_sampler.set_epoch(epoch)
+        if top_sampler is not None:
+            top_sampler.set_epoch(epoch)
+        if csr_sampler is not None:
+            csr_sampler.set_epoch(epoch)
         model.train()
         top_head.train()
         total_loss = 0.0
@@ -189,8 +217,7 @@ def pretrain(
                 pred_csr = model(x_csr, market_state=m_csr)
                 l_csr = _csr_loss(pred_csr, y_csr, loss_mode)
 
-            w1, w2, w3 = loss_weights
-            loss = (w1 * l_mpp + w2 * l_top + w3 * l_csr) / 3 / (grad_accum_steps or 1)
+            loss = (l_mpp + 0.5 * l_top + l_csr) / 3 / max(grad_accum_steps, 1)
 
             if use_amp and amp_scaler is not None:
                 amp_scaler.scale(loss).backward()
@@ -217,13 +244,16 @@ def pretrain(
 
         if avg_loss < best_loss:
             best_loss = avg_loss
-            torch.save(model.state_dict(), config.pretrain_weights_path)
+            if get_rank() == 0:
+                torch.save(
+                    unwrap_model(model).state_dict(), config.pretrain_weights_path
+                )
 
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % 10 == 0 and get_rank() == 0:
             torch.save(
                 {
-                    "model_state_dict": model.state_dict(),
-                    "top_head_state_dict": top_head.state_dict(),
+                    "model_state_dict": unwrap_model(model).state_dict(),
+                    "top_head_state_dict": unwrap_model(top_head).state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
                     "epoch": epoch + 1,

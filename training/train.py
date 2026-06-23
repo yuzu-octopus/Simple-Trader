@@ -5,29 +5,32 @@ import numpy as np
 import torch
 from sklearn.preprocessing import StandardScaler
 from torch import nn, optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
 from tqdm import tqdm
 
-from config import Config, get_device
+from config import Config, get_device, get_rank, is_distributed
 from models.stock_model import StockTransformer
-from src.utils import create_model, save_scaler, scale_features
+from src.utils import create_model, save_scaler, scale_features, unwrap_model
 
 CHECKPOINT_PATH = "data/models/checkpoint.pt"
 
 
 def save_checkpoint(
-    model,
-    optimizer,
-    scheduler,
-    epoch,
-    best_val_loss,
-    patience_counter,
-    path=CHECKPOINT_PATH,
+    model: nn.Module,
+    optimizer: optim.Optimizer,
+    scheduler: optim.lr_scheduler.LRScheduler,
+    epoch: int,
+    best_val_loss: float,
+    patience_counter: int,
+    path: str = CHECKPOINT_PATH,
 ) -> None:
+    """Save training state. Under DDP, only rank 0 writes to avoid file races."""
+    if is_distributed() and get_rank() != 0:
+        return
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": unwrap_model(model).state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "epoch": epoch,
@@ -38,9 +41,15 @@ def save_checkpoint(
     )
 
 
-def load_checkpoint(model, optimizer, scheduler, device, path=CHECKPOINT_PATH):
+def load_checkpoint(
+    model: nn.Module,
+    optimizer: optim.Optimizer,
+    scheduler: optim.lr_scheduler.LRScheduler,
+    device: torch.device,
+    path: str = CHECKPOINT_PATH,
+) -> tuple[int, float, int]:
     ckpt = torch.load(path, weights_only=True, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    unwrap_model(model).load_state_dict(ckpt["model_state_dict"])
     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     scheduler.load_state_dict(ckpt["scheduler_state_dict"])
     return ckpt["epoch"], ckpt["best_val_loss"], ckpt["patience_counter"]
@@ -86,7 +95,8 @@ def train(
     train_market: np.ndarray | None = None,
     val_market: np.ndarray | None = None,
     pretrain_path: str | None = None,
-) -> tuple[StockTransformer, StandardScaler]:
+    checkpoint_path: str = CHECKPOINT_PATH,
+) -> tuple[nn.Module, StandardScaler]:
     scaler = StandardScaler()
     train_scaled = scale_features(
         train_features, scaler.fit(train_features.reshape(-1, config.n_features))
@@ -108,26 +118,29 @@ def train(
         else None
     )
 
-    if train_m_t is not None:
-        train_loader = DataLoader(
-            TensorDataset(train_t, train_y, train_m_t),
-            batch_size=config.batch_size,
-            shuffle=True,
-        )
-    else:
-        train_loader = DataLoader(
-            TensorDataset(train_t, train_y),
-            batch_size=config.batch_size,
-            shuffle=True,
-        )
+    train_dataset = (
+        TensorDataset(train_t, train_y, train_m_t)
+        if train_m_t is not None
+        else TensorDataset(train_t, train_y)
+    )
+    train_sampler: DistributedSampler | None = (
+        DistributedSampler(train_dataset, shuffle=True) if is_distributed() else None
+    )
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        sampler=train_sampler,
+        shuffle=train_sampler is None,
+    )
 
     device = get_device()
     model = create_model(config, device)
     if pretrain_path and Path(pretrain_path).exists():
-        model.load_state_dict(
+        unwrap_model(model).load_state_dict(
             torch.load(pretrain_path, weights_only=True, map_location=device)
         )
-        print(f"  Loaded pre-trained weights from {pretrain_path}")
+        if get_rank() == 0:
+            print(f"  Loaded pre-trained weights from {pretrain_path}")
     Path(config.model_save_path).parent.mkdir(parents=True, exist_ok=True)
     use_amp = device.type in ("cuda", "mps")
     amp_scaler = torch.amp.GradScaler(device.type) if use_amp else None
@@ -135,8 +148,14 @@ def train(
     if loss_mode == "msrr":
         criterion = msrr_loss
         base_lr = config.learning_rate * 0.75
-        body = [p for n, p in model.named_parameters() if "output_head" not in n]
-        head = [p for n, p in model.named_parameters() if "output_head" in n]
+        body = [
+            p
+            for n, p in unwrap_model(model).named_parameters()
+            if "output_head" not in n
+        ]
+        head = [
+            p for n, p in unwrap_model(model).named_parameters() if "output_head" in n
+        ]
         optimizer = optim.AdamW(
             [
                 {"params": body, "weight_decay": 0.0},
@@ -147,21 +166,21 @@ def train(
     elif loss_mode == "margin":
         criterion = margin_ranking_loss
         optimizer = optim.AdamW(
-            model.parameters(),
+            unwrap_model(model).parameters(),
             lr=config.learning_rate * 0.5,
             weight_decay=config.weight_decay,
         )
     elif loss_mode == "listnet":
         criterion = listnet_loss
         optimizer = optim.AdamW(
-            model.parameters(),
+            unwrap_model(model).parameters(),
             lr=config.learning_rate * 0.3,
             weight_decay=config.weight_decay,
         )
     else:
         criterion = nn.MSELoss()
         optimizer = optim.AdamW(
-            model.parameters(),
+            unwrap_model(model).parameters(),
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
         )
@@ -173,9 +192,11 @@ def train(
     best_epoch = resume_epoch
 
     if resume_epoch > 0:
-        load_checkpoint(model, optimizer, scheduler, device)
+        loaded_epoch, best_val_loss, patience_counter = load_checkpoint(
+            model, optimizer, scheduler, device, path=checkpoint_path
+        )
         tqdm.write(
-            f"  Resumed from epoch {resume_epoch} (best_val_loss={best_val_loss:.6f})"
+            f"  Resumed from epoch {loaded_epoch} (best_val_loss={best_val_loss:.6f})"
         )
 
     epoch_bar = tqdm(
@@ -188,6 +209,8 @@ def train(
     )
 
     for epoch in epoch_bar:
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         model.train()
         train_loss = 0.0
         optimizer.zero_grad()
@@ -215,7 +238,9 @@ def train(
             if (step + 1) % grad_accum_steps == 0:
                 if use_amp and amp_scaler is not None:
                     amp_scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    unwrap_model(model).parameters(), config.max_grad_norm
+                )
                 if use_amp and amp_scaler is not None:
                     amp_scaler.step(optimizer)
                     amp_scaler.update()
@@ -227,9 +252,11 @@ def train(
         model.eval()
         with torch.no_grad():
             if val_m_t is not None:
-                val_pred = model(val_t.to(device), market_state=val_m_t.to(device))
+                val_pred = unwrap_model(model)(
+                    val_t.to(device), market_state=val_m_t.to(device)
+                )
             else:
-                val_pred = model(val_t.to(device))
+                val_pred = unwrap_model(model)(val_t.to(device))
             val_loss = criterion(val_pred, val_y.to(device)).item()
         scheduler.step()
         epoch_bar.set_postfix(
@@ -241,7 +268,8 @@ def train(
             best_val_loss = val_loss
             best_epoch = epoch + 1
             patience_counter = 0
-            torch.save(model.state_dict(), config.model_save_path)
+            if get_rank() == 0:
+                torch.save(unwrap_model(model).state_dict(), config.model_save_path)
         else:
             patience_counter += 1
             if patience_counter >= config.early_stop_patience:
@@ -250,10 +278,19 @@ def train(
 
         if (epoch + 1) % 10 == 0:
             save_checkpoint(
-                model, optimizer, scheduler, epoch + 1, best_val_loss, patience_counter
+                model,
+                optimizer,
+                scheduler,
+                epoch + 1,
+                best_val_loss,
+                patience_counter,
+                path=checkpoint_path,
             )
 
-    model.load_state_dict(torch.load(config.model_save_path, weights_only=True))
+    if get_rank() == 0:
+        unwrap_model(model).load_state_dict(
+            torch.load(config.model_save_path, weights_only=True, map_location="cpu")
+        )
     tqdm.write(f"  Best val_loss: {best_val_loss:.6f} at epoch {best_epoch}")
     return model, scaler
 
@@ -271,14 +308,20 @@ def train_seed(
     train_market: np.ndarray | None = None,
     val_market: np.ndarray | None = None,
     pretrain_path: str | None = None,
-) -> tuple[StockTransformer, StandardScaler]:
+    checkpoint_path: str | None = None,
+) -> tuple[nn.Module, StandardScaler]:
+    # Per-seed checkpoint path so --seeds N --resume doesn't leak a previous seed's
+    # checkpoint into the next seed (and to keep DDP ranks from racing on the same file).
+    if checkpoint_path is None:
+        checkpoint_path = CHECKPOINT_PATH.replace(".pt", f"_seed{seed}.pt")
+
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     resume_epoch = resume_patience = 0
     resume_best_loss: float = float("inf")
-    if resume and Path(CHECKPOINT_PATH).exists():
-        ckpt = torch.load(CHECKPOINT_PATH, weights_only=True, map_location="cpu")
+    if resume and Path(checkpoint_path).exists():
+        ckpt = torch.load(checkpoint_path, weights_only=True, map_location="cpu")
         resume_epoch = ckpt["epoch"]
         resume_best_loss = ckpt["best_val_loss"]
         resume_patience = ckpt["patience_counter"]
@@ -298,6 +341,7 @@ def train_seed(
         train_market=train_market,
         val_market=val_market,
         pretrain_path=pretrain_path,
+        checkpoint_path=checkpoint_path,
     )
 
 
@@ -310,7 +354,7 @@ def run_training(
     train_path: str | None = None,
     val_path: str | None = None,
     pretrain_path: str | None = None,
-) -> tuple[StockTransformer, StandardScaler]:
+) -> tuple[nn.Module, StandardScaler]:
     train_path = train_path or f"{config.features_path}/train.npz"
     val_path = val_path or f"{config.features_path}/val.npz"
     train_path_obj: Path = Path(train_path)  # type: ignore[arg-type]
@@ -349,8 +393,12 @@ def run_training(
             models.append(m)
             scalers.append(s)
             seed_path = config.model_save_path.replace(".pt", f"_seed{seed_num}.pt")
-            torch.save(m.state_dict(), seed_path)
-            print(f"  Saved seed {seed_num} to {seed_path}")
+            # Gate seed-weight save to rank 0: every rank hitting torch.save
+            # simultaneously to the same `seed_path` would corrupt the file
+            # under DDP (same class of bug as save_checkpoint periodic save).
+            if get_rank() == 0:
+                torch.save(unwrap_model(m).state_dict(), seed_path)
+                print(f"  Saved seed {seed_num} to {seed_path}")
         model, scaler = models[0], scalers[0]
     else:
         model, scaler = train_seed(
@@ -369,5 +417,6 @@ def run_training(
         )
 
     save_scaler(scaler, f"{config.features_path}/scaler.json")
-    print(f"Training complete. Best model saved to {config.model_save_path}")
+    if get_rank() == 0:
+        print(f"Training complete. Best model saved to {config.model_save_path}")
     return model, scaler

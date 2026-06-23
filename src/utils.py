@@ -4,17 +4,17 @@ from pathlib import Path
 import numpy as np
 import torch
 from sklearn.preprocessing import StandardScaler
+from torch import nn
+from torch.nn.parallel import DistributedDataParallel
 
-from config import Config, get_device
+from config import Config, get_device, is_distributed
 from models.stock_model import StockTransformer
 
 
-def create_model(
-    config: Config, device: torch.device | None = None
-) -> StockTransformer:
+def create_model(config: Config, device: torch.device | None = None) -> nn.Module:
     if device is None:
         device = get_device()
-    model = StockTransformer(
+    model: nn.Module = StockTransformer(
         n_stocks=config.n_stocks,
         n_features=config.n_features,
         d_model=config.d_model,
@@ -25,15 +25,29 @@ def create_model(
         rankglu_bottleneck=64,
         market_state_size=5,
     ).to(device)
+    if is_distributed() and device.type == "cuda":
+        model = DistributedDataParallel(model, device_ids=[device.index])
     return model
 
 
-def load_model(config: Config, device: torch.device | None = None) -> StockTransformer:
+def unwrap_model(model: nn.Module) -> nn.Module:
+    """Recursively strip DistributedDataParallel wrappers, returning the inner module.
+
+    Safe to call on plain nn.Modules (returns them as-is).
+    """
+    if isinstance(model, DistributedDataParallel):
+        return model.module
+    return model
+
+
+def load_model(
+    config: Config, device: torch.device | None = None
+) -> StockTransformer | DistributedDataParallel:
     if device is None:
         device = get_device()
     model = create_model(config, device)
     state = torch.load(config.model_save_path, weights_only=True, map_location=device)
-    model.load_state_dict(state)
+    unwrap_model(model).load_state_dict(state)
     model.eval()
     return model
 

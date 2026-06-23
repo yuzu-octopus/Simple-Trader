@@ -65,21 +65,34 @@ def generate_colab_script(args: argparse.Namespace) -> str:
 
     do_pretrain = " --pretrain" in extra
 
-    return f"""# TradingBot — Colab Training
-# Paste ALL of this into ONE Colab cell (GPU runtime) and run.
+    return f"""# TradingBot — Remote Training
+# Works on both Colab and Kaggle.
+# Colab: paste into a GPU cell and run.
+# Kaggle: create a Notebook (GPU accelerator), paste into a cell, run.
 
 import os, sys, warnings, shutil, time, zipfile, base64, io
 from pathlib import Path
 warnings.filterwarnings("ignore")
 start = time.time()
 
+# --- Runtime environment detection ---
+IS_KAGGLE = "KAGGLE_KERNEL_RUN_TYPE" in os.environ
+
 print("Installing dependencies...")
-get_ipython().system("pip install -q unlockedpd>=0.3.0 yfinance>=1.4.1 pyperclip>=1.11.0 lxml>=6.1.1")
+if IS_KAGGLE:
+    import subprocess as _sp
+    _sp.run("pip install -q unlockedpd>=0.3.0 yfinance>=1.4.1 lxml".split())
+else:
+    get_ipython().system("pip install -q unlockedpd>=0.3.0 yfinance>=1.4.1 pyperclip>=1.11.0 lxml>=6.1.1")
 
 import torch
-print(f"CUDA: {{torch.cuda.is_available()}} — Device: {{torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}}")
+device_count = torch.cuda.device_count()
+device_name = torch.cuda.get_device_name(0) if device_count > 0 else "CPU"
+n_gpus = device_count
+print(f"CUDA: {{device_count > 0}} — {{device_count}} GPU(s) — {{device_name}}")
 
-BASE = "/content/tradingbot"
+BASE = "/kaggle/working/tradingbot" if IS_KAGGLE else "/content/tradingbot"
+ARCHIVE = "/kaggle/working/tradingbot_model" if IS_KAGGLE else "/content/tradingbot_model"
 Path(BASE).mkdir(parents=True, exist_ok=True)
 
 print("Extracting project files...")
@@ -99,7 +112,7 @@ def _run():
     except Exception:
         import traceback
         traceback.print_exc()
-        print("\n[FATAL] exec failed — see traceback above")
+        print("\\n[FATAL] exec failed \\u2014 see traceback above")
         raise
 
 {'print(f"[{time.time()-start:.0f}s] Pre-training step..."); sv = sys.argv; sys.argv = [a for a in sv if a != "--pretrain"]; _run(); print(f"[{time.time()-start:.0f}s] Pre-training done. Starting fine-tune..."); sys.argv = sv' if do_pretrain else ""}
@@ -107,10 +120,14 @@ _run()
 
 elapsed = time.time() - start
 if Path(BASE, "data/models/best.pt").exists():
-    shutil.make_archive("/content/tradingbot_model", "zip", BASE + "/data/models")
-    print(f"\\n[{{elapsed:.0f}}s] Downloading...")
-    from google.colab import files
-    files.download("/content/tradingbot_model.zip")
+    shutil.make_archive(ARCHIVE, "zip", BASE + "/data/models")
+    print(f"\\n[{{elapsed:.0f}}s] Training complete.")
+    if IS_KAGGLE:
+        print(f"Model saved to {{BASE}}/data/models/best.pt")
+        print("Download via Kaggle UI: right sidebar \\u2192 Output")
+    else:
+        from google.colab import files
+        files.download(ARCHIVE + ".zip")
     print("Extract best.pt to data/models/colab/<name>/ and run --model colab/<name>")
 else:
     print("\\n[WARN] best.pt not found")

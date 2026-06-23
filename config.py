@@ -1,3 +1,4 @@
+import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -5,11 +6,25 @@ from pathlib import Path
 import pandas as pd
 import requests
 import torch
+import torch.distributed as dist
+
+
+def is_distributed() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def get_world_size() -> int:
+    return dist.get_world_size() if is_distributed() else 1
+
+
+def get_rank() -> int:
+    return dist.get_rank() if is_distributed() else 0
 
 
 def get_device() -> torch.device:
     if torch.cuda.is_available():
-        return torch.device("cuda")
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        return torch.device(f"cuda:{local_rank}")
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
