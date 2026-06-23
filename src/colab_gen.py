@@ -56,6 +56,8 @@ def generate_colab_script(args: argparse.Namespace) -> str:
         str(grad_accum),
     ] + (extra.strip().split() if extra else [])
 
+    do_pretrain = " --pretrain" in extra
+
     return f"""# TradingBot — Colab Training
 # Paste ALL of this into ONE Colab cell (GPU runtime) and run.
 
@@ -81,12 +83,14 @@ os.chdir(BASE)
 sys.path.insert(0, BASE)
 sys.argv = {flaglist}
 
-print(f"[{{time.time()-start:.0f}}s] Starting training...")
-# Clear cached modules so updated files are loaded on re-run
-for m in list(sys.modules):
-    if m.startswith(("config", "models", "src", "training")):
-        sys.modules.pop(m, None)
-exec(open("main.py").read())
+def _run():
+    for m in list(sys.modules):
+        if m.startswith(("config", "models", "src", "training")):
+            sys.modules.pop(m, None)
+    exec(open("main.py").read())
+
+{'print(f"[{time.time()-start:.0f}s] Pre-training step..."); sv = sys.argv; sys.argv = [a for a in sv if a != "--pretrain"]; _run(); print(f"[{time.time()-start:.0f}s] Pre-training done. Starting fine-tune..."); sys.argv = sv' if do_pretrain else ""}
+_run()
 
 elapsed = time.time() - start
 if Path(BASE, "data/models/best.pt").exists():
