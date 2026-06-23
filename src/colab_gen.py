@@ -1,10 +1,20 @@
 import argparse
+import base64
+import io
+import zipfile
 from pathlib import Path
 
 
 def _safe_str(data: str) -> str:
-    """Produce a safe Python string literal for embedding."""
     return repr(data)
+
+
+def _build_zip(files: dict[str, str]) -> str:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for path, content in files.items():
+            z.writestr(path, content)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 def generate_colab_script(args: argparse.Namespace) -> str:
@@ -39,10 +49,7 @@ def generate_colab_script(args: argparse.Namespace) -> str:
     for p in ["models/__init__.py", "src/__init__.py", "training/__init__.py"]:
         files[p] = ""
 
-    lines = []
-    for path, content in files.items():
-        lines.append(f"_write({_safe_str(path)}, {_safe_str(content)})")
-    writes = "\n".join(lines)
+    payload = _build_zip(files)
 
     flaglist = [
         "main.py",
@@ -61,23 +68,25 @@ def generate_colab_script(args: argparse.Namespace) -> str:
     return f"""# TradingBot — Colab Training
 # Paste ALL of this into ONE Colab cell (GPU runtime) and run.
 
-import os, sys, warnings, shutil, time
+import os, sys, warnings, shutil, time, subprocess, zipfile, base64, io
 from pathlib import Path
 warnings.filterwarnings("ignore")
 start = time.time()
+
+print("Installing dependencies...")
+subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+    "unlockedpd>=0.3.0", "yfinance>=1.4.1", "pyperclip>=1.11.0", "lxml>=6.1.1",
+], check=False)
 
 import torch
 print(f"CUDA: {{torch.cuda.is_available()}} — Device: {{torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}}")
 
 BASE = "/content/tradingbot"
+Path(BASE).mkdir(parents=True, exist_ok=True)
 
-def _write(path, content):
-    full = Path(BASE, path)
-    full.parent.mkdir(parents=True, exist_ok=True)
-    full.write_text(content)
-
-print("Writing project files...")
-{writes}
+print("Extracting project files...")
+with zipfile.ZipFile(io.BytesIO(base64.b64decode({_safe_str(payload)}))) as z:
+    z.extractall(BASE)
 
 os.chdir(BASE)
 sys.path.insert(0, BASE)
