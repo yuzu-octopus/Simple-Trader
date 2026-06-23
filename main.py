@@ -229,6 +229,11 @@ def main() -> None:
         help="Generate a self-contained Colab training script and copy to clipboard (does not train locally)",
     )
     parser.add_argument(
+        "--show-script",
+        action="store_true",
+        help="When used with --colab-template, also print the full script to terminal",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default=None,
@@ -258,9 +263,10 @@ def main() -> None:
             print("Colab script copied to clipboard!")
         except Exception:
             pass
-        print("\n--- Colab Notebook Script ---")
-        print(script)
-        print("\n--- Paste into a Colab GPU runtime ---")
+        if args.show_script:
+            print("\n--- Colab Notebook Script ---")
+            print(script)
+            print("\n--- Paste into a Colab GPU runtime ---")
         return
 
     config = Config()
