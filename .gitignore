@@ -1,4 +1,43 @@
+# Python
 __pycache__/
 *.py[oc]
+*.egg-info/
+*.egg
+dist/
+build/
+wheels/
+
+# Virtual environments
 .venv
+venv/
+
+# Environment
 .env
+
+# Data & models (all regeneratable via uv run python main.py)
+data/
+
+# Testing
+.pytest_cache/
+.cache/
+
+# Linting / type checking
+.mypy_cache/
+.ruff_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
