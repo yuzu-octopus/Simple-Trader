@@ -200,33 +200,34 @@ def build_feature_matrix(
     dates = [str(d) for d in common_idx]
     tickers = list(all_features.keys())
 
+    rolling_1y = {}
+    rolling_1m = {}
+    rolling_1w = {}
+    for ticker, df in all_features.items():
+        rolling_1y[ticker] = df.rolling(WINDOW_1Y).mean()
+        rolling_1m[ticker] = df.rolling(WINDOW_1M).mean()
+        rolling_1w[ticker] = df.rolling(WINDOW_1W).mean()
+
     feature_matrix = np.full((len(dates), len(tickers), N_FEATURES * N_WINDOWS), np.nan)
 
     def _extract_date(date_idx_pair):
         row_idx, date = date_idx_pair
         row = np.zeros((len(tickers), N_FEATURES * N_WINDOWS))
         for col_idx, ticker in enumerate(tickers):
-            series = all_features[ticker].loc[:date]
-            if len(series) == 0:
+            try:
+                r1y = rolling_1y[ticker].loc[date]
+                r1m = rolling_1m[ticker].loc[date]
+                r1w = rolling_1w[ticker].loc[date]
+                r1d = all_features[ticker].loc[date]
+            except KeyError:
                 continue
-            windows = [
-                series.iloc[-WINDOW_1Y:] if len(series) >= WINDOW_1Y else series,
-                series.iloc[-WINDOW_1M:] if len(series) >= WINDOW_1M else series,
-                series.iloc[-WINDOW_1W:] if len(series) >= WINDOW_1W else series,
-                series.iloc[-WINDOW_1D:] if len(series) >= WINDOW_1D else series,
-            ]
+            cols = all_features[ticker].columns[:N_FEATURES]
             stock_vec = []
-            for w in windows:
-                if len(w) == 0:
-                    stock_vec.extend([0.0] * N_FEATURES)
-                else:
-                    w_mean = w.mean()
-                    stock_vec.extend(
-                        [
-                            float(w_mean[col]) if not pd.isna(w_mean[col]) else 0.0
-                            for col in series.columns[:N_FEATURES]
-                        ]
-                    )
+            for feat_series in [r1y, r1m, r1w, r1d]:
+                stock_vec.extend(
+                    float(feat_series[col]) if not pd.isna(feat_series[col]) else 0.0
+                    for col in cols
+                )
             row[col_idx] = np.array(stock_vec)
         return row_idx, row
 
@@ -253,35 +254,31 @@ def compute_features_for_date(
 ) -> tuple[np.ndarray, list[str]]:
     date = pd.Timestamp(date_str)
     tickers = []
+    features = {}
     for ticker, df in raw_data.items():
         if "Close" in df.columns and len(df) >= WINDOW_1Y:
             tickers.append(ticker)
+            features[ticker] = compute_window_features(df)
     if not tickers:
         msg = "No stocks with sufficient data"
         raise ValueError(msg)
     feature_matrix = np.full((len(tickers), N_FEATURES * N_WINDOWS), 0.0)
     for col_idx, ticker in enumerate(tickers):
-        series = compute_window_features(raw_data[ticker]).loc[:date]
-        if len(series) == 0:
+        try:
+            feat = features[ticker]
+            r1y = feat.rolling(WINDOW_1Y).mean().loc[date]
+            r1m = feat.rolling(WINDOW_1M).mean().loc[date]
+            r1w = feat.rolling(WINDOW_1W).mean().loc[date]
+            r1d = feat.loc[date]
+        except (KeyError, TypeError):
             continue
-        windows = [
-            series.iloc[-WINDOW_1Y:] if len(series) >= WINDOW_1Y else series,
-            series.iloc[-WINDOW_1M:] if len(series) >= WINDOW_1M else series,
-            series.iloc[-WINDOW_1W:] if len(series) >= WINDOW_1W else series,
-            series.iloc[-WINDOW_1D:] if len(series) >= WINDOW_1D else series,
-        ]
+        cols = feat.columns[:N_FEATURES]
         stock_vec = []
-        for w in windows:
-            if len(w) == 0:
-                stock_vec.extend([0.0] * N_FEATURES)
-            else:
-                w_mean = w.mean()
-                stock_vec.extend(
-                    [
-                        float(w_mean[col]) if not pd.isna(w_mean[col]) else 0.0
-                        for col in series.columns[:N_FEATURES]
-                    ]
-                )
+        for feat_series in [r1y, r1m, r1w, r1d]:
+            stock_vec.extend(
+                float(feat_series[col]) if not pd.isna(feat_series[col]) else 0.0
+                for col in cols
+            )
         feature_matrix[col_idx] = np.array(stock_vec)
     return np.nan_to_num(feature_matrix, nan=0.0), tickers
 
