@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TradingBot | Multi-Stock ML Trading Bot</title>
+  <title>TradingBot | Multi-stock ML trading bot</title>
   <meta name="description" content="Multi-stock ML trading bot using a decoder-only Transformer with RankGLU output and market-guided gating. Learns inter-stock relationships across the S&P 500.">
   <meta name="theme-color" content="#282a36">
-  <!-- Open Graph -->
   <meta property="og:type" content="website">
-  <meta property="og:title" content="TradingBot | Multi-Stock ML Trading Bot">
+  <meta property="og:title" content="TradingBot | Multi-stock ML trading bot">
   <meta property="og:description" content="Multi-stock ML trading bot using a decoder-only Transformer with RankGLU output and market-guided gating. Learns inter-stock relationships across the S&P 500.">
   <meta property="og:url" content="https://yuzu-octopus.github.io/TradingBot/">
-  <!-- Twitter Card -->
+  
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="TradingBot | Multi-Stock ML Trading Bot">
-  <meta name="twitter:description" content="Multi-stock ML trading bot using a decoder-only Transformer with RankGLU output and market-guided gating across the S&P 500.">
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23282a36'/%3E%3Cpath d='M8 48h48v4H8z' fill='%236272a4'/%3E%3Cpolyline points='16,44 24,28 32,36 40,18 48,30' fill='none' stroke='%2350fa7b' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='48' cy='30' r='3' fill='%23bd93f9'/%3E%3C/svg%3E">
+  <meta name="twitter:title" content="TradingBot | Multi-stock ML trading bot">
+  <meta name="twitter:description" content="Multi-stock ML trading bot using a decoder-only Transformer with RankGLU output and market-guided gating. Learns inter-stock relationships across the S&P 500.">
+  
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2064%2064%22%3E%0A%20%20%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2210%22%20fill%3D%22%23282a36%22/%3E%0A%20%20%3Cpolyline%20points%3D%2216%2C44%2024%2C28%2032%2C36%2040%2C18%2048%2C30%22%20fill%3D%22none%22%20stroke%3D%22%2350fa7b%22%20stroke-width%3D%223%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22/%3E%0A%20%20%3Ccircle%20cx%3D%2248%22%20cy%3D%2230%22%20r%3D%223%22%20fill%3D%22%23bd93f9%22/%3E%0A%3C/svg%3E%0A">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -52,7 +52,6 @@
 
     h1, h2, h3, h4 { font-weight: 700; }
 
-    /* Sidebar */
     .sidebar {
       position: fixed;
       top: 0; left: 0; bottom: 0;
@@ -156,7 +155,6 @@
       color: var(--purple);
     }
 
-    /* Main content */
     .main {
       margin-left: 240px;
       min-height: 100vh;
@@ -179,7 +177,6 @@
       margin-bottom: 24px;
     }
 
-    /* Hero */
     .hero {
       text-align: center;
       padding: 80px 40px 48px;
@@ -242,7 +239,6 @@
       border-color: var(--pink);
     }
 
-    /* Card grid */
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -272,7 +268,6 @@
       font-size: 0.8rem;
     }
 
-    /* Tables */
     table {
       width: 100%;
       border-collapse: collapse;
@@ -299,7 +294,9 @@
 
     tr:hover td { background: var(--bg); }
 
-    /* Code blocks */
+    .status-comfortable { color: var(--green); }
+    .status-tight { color: var(--orange); }
+
     pre {
       background: var(--bg);
       border: 1px solid var(--muted);
@@ -328,7 +325,6 @@
       padding: 0;
     }
 
-    /* Steps list */
     .steps {
       list-style: none;
       padding: 0;
@@ -345,7 +341,22 @@
 
     .steps li strong { color: var(--purple); }
 
-    /* Terms list */
+    .stats {
+      list-style: none;
+      padding: 0;
+    }
+
+    .stats li {
+      padding: 8px 0;
+      border-bottom: 1px solid var(--muted);
+      color: var(--fg);
+      font-size: 0.85rem;
+    }
+
+    .stats li:last-child { border-bottom: none; }
+
+    .stats li strong { color: var(--purple); }
+
     .terms {
       list-style: none;
       padding: 0;
@@ -364,7 +375,6 @@
       font-weight: 700;
     }
 
-    /* Stack badges */
     .stack {
       display: flex;
       gap: 8px;
@@ -382,7 +392,6 @@
 
     .stack .badge strong { color: var(--purple); }
 
-    /* Scrollbar */
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: var(--bg); }
     ::-webkit-scrollbar-thumb { background: var(--panel); border-radius: 4px; }
@@ -391,7 +400,6 @@
     .skip-link { position: absolute; left: -9999px; }
     .skip-link:focus { left: 8px; top: 8px; background: var(--purple); color: var(--bg); padding: 8px 12px; z-index: 1300; }
 
-    /* Mobile */
     .mobile-toggle {
       display: none;
       position: fixed;
@@ -422,50 +430,72 @@
 </head>
 <body>
 
-<button class="mobile-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open'); document.querySelector('.main').classList.toggle('shifted');" aria-label="Toggle mobile menu" aria-controls="sidebar">&#9776;</button>
 
+
+<button class="mobile-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open'); document.querySelector('.main').classList.toggle('shifted');" aria-label="Toggle mobile menu">&#9776;</button>
 <a class="skip-link" href="#hero">Skip to content</a>
 
 <aside class="sidebar">
   <div class="sidebar-brand">
-    <div class="logo"><svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg"><rect width="64" height="64" rx="12" fill="#44475a"/><polyline points="12,46 20,30 28,38 36,20 44,32 52,18" fill="none" stroke="#50fa7b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="52" cy="18" r="3" fill="#bd93f9"/></svg></div>
+    <div class="logo"><svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="12" fill="#44475a"/>
+  <polyline points="12,46 20,30 28,38 36,20 44,32 52,18" fill="none" stroke="#50fa7b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="52" cy="18" r="3" fill="#bd93f9"/>
+</svg>
+</div>
     <div class="name">TradingBot</div>
-    <div class="tagline">ML &middot; S&P 500 &middot; Transformer</div>
+    <div class="tagline">ML · S&P 500 · Transformer</div>
   </div>
   <hr class="sidebar-divider">
   <ul class="sidebar-nav">
-    <li><a href="#hero">
-      <span class="icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/></svg></span>
-      Home
-    </a></li>
-    <li><a href="#features">
-      <span class="icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M3,3H11V11H3V3M3,13H11V21H3V13M13,3H21V11H13V3M13,13H21V21H13V13Z"/></svg></span>
-      Features
-    </a></li>
-    <li><a href="#cli">
-      <span class="icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M13,9H11V7H13M13,17H11V11H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"/></svg></span>
-      CLI
-    </a></li>
-    <li><a href="#architecture">
-      <span class="icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M17,7A2,2 0 0,1 19,9V17A2,2 0 0,1 17,19H7A2,2 0 0,1 5,17V9A2,2 0 0,1 7,7H17M7,9V17H17V9H7M12,2A2,2 0 0,1 14,4V6H15V4A3,3 0 0,0 12,1A3,3 0 0,0 9,4V6H10V4A2,2 0 0,1 12,2Z"/></svg></span>
-      Architecture
-    </a></li>
-    <li><a href="#how-it-works">
-      <span class="icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12,16L19.36,10.27L21,9L12,3L3,9L4.63,10.27M12,18.54L4.62,12.81L3,14.07L12,20L21,14.07L19.37,12.8L12,18.54Z"/></svg></span>
-      How It Works
-    </a></li>
-    <li><a href="#terms">
-      <span class="icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M10,19L12,17L14,19L15,18L13,16L15,14L14,13L12,15L10,13L9,14L11,16L9,18L10,19Z"/></svg></span>
-      Terms
-    </a></li>
-    <li><a href="#quickstart">
-      <span class="icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M8,5.14V19.14L19,12.14L8,5.14Z"/></svg></span>
-      Quick Start
-    </a></li>
-    <li><a href="#stack">
-      <span class="icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12,16L19.36,10.27L21,9L12,3L3,9L4.63,10.27M12,18.54L4.62,12.81L3,14.07L12,20L21,14.07L19.37,12.8L12,18.54Z"/></svg></span>
-      Stack
-    </a></li>
+    <li><a href="#hero"><span class="icon">
+
+<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/></svg>
+
+</span> Home</a></li>
+    
+    <li><a href="#features"><span class="icon">
+
+<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M3,3H11V11H3V3M3,13H11V21H3V13M13,3H21V11H13V3M13,13H21V21H13V13Z"/></svg>
+
+</span> Features</a></li>
+    
+    <li><a href="#cli"><span class="icon">
+
+<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M3,17V19H9V17H3M3,5V7H13V5H3M13,21V19H21V17H13V15H11V21H13M7,9V11H3V13H7V15H9V9H7M21,13V11H11V13H21M15,9H17V7H21V5H17V3H15V9Z"/></svg>
+
+</span> CLI Reference</a></li>
+    
+    <li><a href="#architecture"><span class="icon">
+
+<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M17,7A2,2 0 0,1 19,9V17A2,2 0 0,1 17,19H7A2,2 0 0,1 5,17V9A2,2 0 0,1 7,7H17M7,9V17H17V9H7M12,2A2,2 0 0,1 14,4V6H15V4A3,3 0 0,0 12,1A3,3 0 0,0 9,4V6H10V4A2,2 0 0,1 12,2Z"/></svg>
+
+</span> Model Architecture</a></li>
+    
+    <li><a href="#how-it-works"><span class="icon">
+
+<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12,16L19.36,10.27L21,9L12,3L3,9L4.63,10.27M12,18.54L4.62,12.81L3,14.07L12,20L21,14.07L19.37,12.8L12,18.54Z"/></svg>
+
+</span> How It Works</a></li>
+    
+    <li><a href="#terms"><span class="icon">
+
+<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20M10,19L12,17L14,19L15,18L13,16L15,14L14,13L12,15L10,13L9,14L11,16L9,18L10,19Z"/></svg>
+
+</span> Terminology</a></li>
+    
+    <li><a href="#quickstart"><span class="icon">
+
+<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M8,5.14V19.14L19,12.14L8,5.14Z"/></svg>
+
+</span> Quick Start</a></li>
+    
+    <li><a href="#stack"><span class="icon">
+
+<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M12,16L19.36,10.27L21,9L12,3L3,9L4.63,10.27M12,18.54L4.62,12.81L3,14.07L12,20L21,14.07L19.37,12.8L12,18.54Z"/></svg>
+
+</span> Tech Stack</a></li>
+    
   </ul>
   <hr class="sidebar-divider">
   <div class="sidebar-footer">
@@ -482,113 +512,179 @@
       <p class="tagline">Multi-stock ML trading bot</p>
       <p class="subtitle">All S&P 500 stocks pass through a single decoder-only Transformer in one forward pass. Learns inter-stock relationships — outputs per-stock buy/sell confidence scores from -1 to +1.</p>
       <div class="cta">
-        <a href="https://github.com/yuzu-octopus/Simple-Trader" class="btn btn-primary">View on GitHub</a>
+        <a href="https://github.com/yuzu-octopus/TradingBot" class="btn btn-primary">View on GitHub</a>
+        
         <a href="#quickstart" class="btn btn-outline">Quick Start</a>
+        
       </div>
     </div>
   </section>
 
+  
   <section id="features">
     <div class="container">
       <h2>Features</h2>
+
+      
       <div class="grid">
+        
         <div class="card">
           <h3>Decoder-Only Transformer</h3>
           <p>Causal masking across stocks — each stock attends to itself and preceding stocks. Research shows decoder-only beats encoder-only for stock prediction. ~478K parameters.</p>
         </div>
+        
         <div class="card">
           <h3>Multi-Window Features</h3>
           <p>30 technical indicators (SMA, RSI, MACD, Bollinger, volatility, returns, drawdown) computed per-window at 1y, 1m, 1w, 1d lookbacks — 120 features per stock per day.</p>
         </div>
+        
         <div class="card">
           <h3>Portfolio-Aware Training</h3>
           <p>From MSE to MSRR (direct Sharpe optimization), margin ranking, and ListNet losses. MSRR optimizes portfolio weights, not individual stock errors.</p>
         </div>
+        
         <div class="card">
           <h3>Market-Guided Gating</h3>
           <p>SPY state (returns, volatility, volume) rescales features before the transformer. The model adapts to bull/bear/high-volatility regimes automatically.</p>
         </div>
+        
       </div>
+
+      
     </div>
   </section>
-
+  
   <section id="cli">
     <div class="container">
       <h2>CLI Reference</h2>
+
+      
       <table>
         <thead>
           <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
         </thead>
         <tbody>
+          
           <tr><td>--mode</td><td>train</td><td>train or infer</td></tr>
+          
           <tr><td>--loss</td><td>mse</td><td>mse, msrr, margin, listnet</td></tr>
+          
           <tr><td>--seeds</td><td>1</td><td>Ensemble size (multiple random seeds, average predictions)</td></tr>
+          
           <tr><td>--grad-accum</td><td>1</td><td>Gradient accumulation steps (simulates larger batch)</td></tr>
+          
           <tr><td>--resume</td><td>off</td><td>Resume training from last checkpoint</td></tr>
+          
           <tr><td>--walk-forward</td><td>off</td><td>Sliding chronological train/val/test windows</td></tr>
+          
           <tr><td>--force-features</td><td>off</td><td>Rebuild feature matrix from scratch</td></tr>
-          <tr><td>--model &lt;path&gt;</td><td>—</td><td>Load model from data/models/&lt;path&gt;/best.pt</td></tr>
+          
+          <tr><td>--model <path></td><td>—</td><td>Load model from data/models/<path>/best.pt</td></tr>
+          
         </tbody>
       </table>
+
+      
     </div>
   </section>
-
+  
   <section id="architecture">
     <div class="container">
       <h2>Model Architecture</h2>
+
+      
       <table>
         <thead>
           <tr><th>Property</th><th>Value</th></tr>
         </thead>
         <tbody>
+          
           <tr><td>Parameters</td><td>~478K</td></tr>
+          
           <tr><td>Architecture</td><td>Decoder-only Transformer (causal), 3 layers, 4 heads</td></tr>
+          
           <tr><td>Output head</td><td>RankGLU (residual bottleneck GLU)</td></tr>
+          
           <tr><td>Conditioning</td><td>MarketGate (SPY-based gating, 5 features)</td></tr>
+          
           <tr><td>d_model</td><td>128</td></tr>
+          
           <tr><td>d_ff</td><td>256</td></tr>
+          
           <tr><td>Dropout</td><td>0.1</td></tr>
+          
           <tr><td>Activation</td><td>GELU</td></tr>
+          
           <tr><td>Optimizer</td><td>AdamW (1e-4, weight decay 1e-4)</td></tr>
-          <tr><td>Input features</td><td>120 per stock (30 indicators &times; 4 windows)</td></tr>
+          
+          <tr><td>Input features</td><td>120 per stock (30 indicators × 4 windows)</td></tr>
+          
           <tr><td>Output</td><td>tanh, scores in [-1, +1]</td></tr>
+          
         </tbody>
       </table>
+
+      
     </div>
   </section>
-
+  
   <section id="how-it-works">
     <div class="container">
       <h2>How It Works</h2>
+
+      
       <ul class="steps">
+        
         <li><strong>1. Data</strong> &mdash; Downloads OHLCV for all S&P 500 stocks via yfinance (~10 years), cached to CSV. Tickers fetched live from Wikipedia.</li>
+        
         <li><strong>2. Features</strong> &mdash; Builds parallel feature matrix: 30 technical indicators per stock per date at 4 lookback windows (1y, 1m, 1w, 1d). SMA, RSI, MACD, Bollinger Bands, volatility, returns, max drawdown, volume ratio.</li>
+        
         <li><strong>3. Model</strong> &mdash; Decoder-only Transformer with causal masking. Each stock attends to itself and preceding stocks. MarketGate rescales features by SPY state. RankGLU output head produces confidence scores.</li>
+        
         <li><strong>4. Training</strong> &mdash; Supervised regression on next-day cross-sectional z-score returns. Supports MSE, MSRR (direct Sharpe optimization), margin ranking, and ListNet losses. Mixed precision, gradient accumulation, cosine annealing LR, early stopping.</li>
+        
         <li><strong>5. Threshold</strong> &mdash; Post-training calibration via isotonic regression. Dual-threshold search maximizes Sharpe ratio — not just return. Produces separate buy and sell thresholds.</li>
+        
       </ul>
+
+      
     </div>
   </section>
-
+  
   <section id="terms">
     <div class="container">
       <h2>Terminology</h2>
+
+      
       <ul class="terms">
-        <li><span class="term">MSE</span> &mdash; Mean Squared Error per stock. Simple regression baseline: loss = &Sigma;(predicted - actual)&sup2;.</li>
-        <li><span class="term">MSRR</span> &mdash; Max Sharpe Ratio Regression. Loss = (1 - portfolio_return)&sup2;. Directly optimizes portfolio Sharpe. Noisier but higher ceiling.</li>
+        
+        <li><span class="term">MSE</span> &mdash; Mean Squared Error per stock. Simple regression baseline: loss = Σ(predicted - actual)².</li>
+        
+        <li><span class="term">MSRR</span> &mdash; Max Sharpe Ratio Regression. Loss = (1 - portfolio_return)². Directly optimizes portfolio Sharpe. Noisier but higher ceiling.</li>
+        
         <li><span class="term">Margin / ListNet</span> &mdash; Pairwise ranking loss (margin: correct relative order) and listwise ranking loss (ListNet: top-1 probability distribution). Good for ranking tasks.</li>
+        
         <li><span class="term">Mixed Precision</span> &mdash; float16 for compute-heavy ops, float32 for critical ops. 30-40% speedup on CUDA and MPS with no accuracy loss.</li>
+        
         <li><span class="term">RankGLU</span> &mdash; Residual bottleneck GLU output head: direct linear path + gated nonlinear branch. Preserves ranking while adding controlled interactions.</li>
+        
         <li><span class="term">MarketGate</span> &mdash; SPY market features (returns, volatility, volume ratio) rescale stock features before the transformer. Regime-adaptive conditioning from MASTER (AAAI 2024).</li>
+        
         <li><span class="term">Walk-Forward</span> &mdash; Multiple chronological train/val/test folds evaluated sequentially. Gold standard for financial ML — captures regime changes.</li>
+        
         <li><span class="term">Z-Score Norm</span> &mdash; Training targets normalized per-day: mean=0, std=1 after winsorizing extremes. Standard in ranking-aware models.</li>
+        
       </ul>
+
+      
     </div>
   </section>
-
+  
   <section id="quickstart">
     <div class="container">
       <h2>Quick Start</h2>
+
+      
       <pre><code># 1. Install dependencies
 uv sync
 
@@ -604,26 +700,43 @@ uv run python main.py --mode train --loss msrr --seeds 5 --grad-accum 4
 # 5. Walk-forward validation
 uv run python main.py --mode train --walk-forward
 
-# 6. Get today's trading signals
-uv run python main.py --mode infer</code></pre>
+# 6. Get today&#39;s trading signals
+uv run python main.py --mode infer
+</code></pre>
+
+      
     </div>
   </section>
-
+  
   <section id="stack">
     <div class="container">
       <h2>Tech Stack</h2>
+
+      
       <div class="stack">
+        
         <span class="badge"><strong>PyTorch</strong> &mdash; deep learning framework</span>
+        
         <span class="badge"><strong>numpy</strong> &mdash; numerical computing</span>
+        
         <span class="badge"><strong>pandas</strong> &mdash; data manipulation</span>
+        
         <span class="badge"><strong>scikit-learn</strong> &mdash; preprocessing + calibration</span>
+        
         <span class="badge"><strong>yfinance</strong> &mdash; Yahoo Finance API</span>
+        
         <span class="badge"><strong>unlockedpd</strong> &mdash; accelerated rolling ops</span>
+        
         <span class="badge"><strong>tqdm</strong> &mdash; progress bars</span>
+        
         <span class="badge"><strong>uv</strong> &mdash; Python package manager</span>
+        
       </div>
+
+      
     </div>
   </section>
+  
 
 </main>
 

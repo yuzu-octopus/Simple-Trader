@@ -39,5 +39,8 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 
+# Agent working files
+.mimocode/
+
 # Logs
 *.log

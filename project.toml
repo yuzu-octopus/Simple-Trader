@@ -1,0 +1,245 @@
+[project]
+name = "TradingBot"
+tagline = "Multi-stock ML trading bot"
+subtitle = "All S&P 500 stocks pass through a single decoder-only Transformer in one forward pass. Learns inter-stock relationships — outputs per-stock buy/sell confidence scores from -1 to +1."
+description = "Multi-stock ML trading bot using a decoder-only Transformer with RankGLU output and market-guided gating. Learns inter-stock relationships across the S&P 500."
+github_url = "https://github.com/yuzu-octopus/TradingBot"
+page_url = "https://yuzu-octopus.github.io/TradingBot/"
+quickstart_url = "#quickstart"
+logo_svg = """
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="12" fill="#44475a"/>
+  <polyline points="12,46 20,30 28,38 36,20 44,32 52,18" fill="none" stroke="#50fa7b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="52" cy="18" r="3" fill="#bd93f9"/>
+</svg>
+"""
+favicon_data = """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="10" fill="#282a36"/>
+  <polyline points="16,44 24,28 32,36 40,18 48,30" fill="none" stroke="#50fa7b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="48" cy="30" r="3" fill="#bd93f9"/>
+</svg>
+"""
+
+[brand]
+tagline = "ML · S&P 500 · Transformer"
+
+[[sections]]
+id = "features"
+type = "features"
+title = "Features"
+icon = "grid"
+
+[[sections.items]]
+title = "Decoder-Only Transformer"
+body = "Causal masking across stocks — each stock attends to itself and preceding stocks. Research shows decoder-only beats encoder-only for stock prediction. ~478K parameters."
+
+[[sections.items]]
+title = "Multi-Window Features"
+body = "30 technical indicators (SMA, RSI, MACD, Bollinger, volatility, returns, drawdown) computed per-window at 1y, 1m, 1w, 1d lookbacks — 120 features per stock per day."
+
+[[sections.items]]
+title = "Portfolio-Aware Training"
+body = "From MSE to MSRR (direct Sharpe optimization), margin ranking, and ListNet losses. MSRR optimizes portfolio weights, not individual stock errors."
+
+[[sections.items]]
+title = "Market-Guided Gating"
+body = "SPY state (returns, volatility, volume) rescales features before the transformer. The model adapts to bull/bear/high-volatility regimes automatically."
+
+[[sections]]
+id = "cli"
+type = "table"
+title = "CLI Reference"
+icon = "gear"
+headers = ["Flag", "Default", "Description"]
+
+[[sections.rows]]
+cells = ["--mode", "train", "train or infer"]
+
+[[sections.rows]]
+cells = ["--loss", "mse", "mse, msrr, margin, listnet"]
+
+[[sections.rows]]
+cells = ["--seeds", "1", "Ensemble size (multiple random seeds, average predictions)"]
+
+[[sections.rows]]
+cells = ["--grad-accum", "1", "Gradient accumulation steps (simulates larger batch)"]
+
+[[sections.rows]]
+cells = ["--resume", "off", "Resume training from last checkpoint"]
+
+[[sections.rows]]
+cells = ["--walk-forward", "off", "Sliding chronological train/val/test windows"]
+
+[[sections.rows]]
+cells = ["--force-features", "off", "Rebuild feature matrix from scratch"]
+
+[[sections.rows]]
+cells = ["--model <path>", "—", "Load model from data/models/<path>/best.pt"]
+
+[[sections]]
+id = "architecture"
+type = "table"
+title = "Model Architecture"
+icon = "chip"
+headers = ["Property", "Value"]
+
+[[sections.rows]]
+cells = ["Parameters", "~478K"]
+
+[[sections.rows]]
+cells = ["Architecture", "Decoder-only Transformer (causal), 3 layers, 4 heads"]
+
+[[sections.rows]]
+cells = ["Output head", "RankGLU (residual bottleneck GLU)"]
+
+[[sections.rows]]
+cells = ["Conditioning", "MarketGate (SPY-based gating, 5 features)"]
+
+[[sections.rows]]
+cells = ["d_model", "128"]
+
+[[sections.rows]]
+cells = ["d_ff", "256"]
+
+[[sections.rows]]
+cells = ["Dropout", "0.1"]
+
+[[sections.rows]]
+cells = ["Activation", "GELU"]
+
+[[sections.rows]]
+cells = ["Optimizer", "AdamW (1e-4, weight decay 1e-4)"]
+
+[[sections.rows]]
+cells = ["Input features", "120 per stock (30 indicators × 4 windows)"]
+
+[[sections.rows]]
+cells = ["Output", "tanh, scores in [-1, +1]"]
+
+[[sections]]
+id = "how-it-works"
+type = "steps"
+title = "How It Works"
+icon = "layers"
+
+[[sections.items]]
+title = "1. Data"
+body = "Downloads OHLCV for all S&P 500 stocks via yfinance (~10 years), cached to CSV. Tickers fetched live from Wikipedia."
+
+[[sections.items]]
+title = "2. Features"
+body = "Builds parallel feature matrix: 30 technical indicators per stock per date at 4 lookback windows (1y, 1m, 1w, 1d). SMA, RSI, MACD, Bollinger Bands, volatility, returns, max drawdown, volume ratio."
+
+[[sections.items]]
+title = "3. Model"
+body = "Decoder-only Transformer with causal masking. Each stock attends to itself and preceding stocks. MarketGate rescales features by SPY state. RankGLU output head produces confidence scores."
+
+[[sections.items]]
+title = "4. Training"
+body = "Supervised regression on next-day cross-sectional z-score returns. Supports MSE, MSRR (direct Sharpe optimization), margin ranking, and ListNet losses. Mixed precision, gradient accumulation, cosine annealing LR, early stopping."
+
+[[sections.items]]
+title = "5. Threshold"
+body = "Post-training calibration via isotonic regression. Dual-threshold search maximizes Sharpe ratio — not just return. Produces separate buy and sell thresholds."
+
+[[sections]]
+id = "terms"
+type = "terms"
+title = "Terminology"
+icon = "document"
+
+[[sections.items]]
+term = "MSE"
+definition = "Mean Squared Error per stock. Simple regression baseline: loss = Σ(predicted - actual)²."
+
+[[sections.items]]
+term = "MSRR"
+definition = "Max Sharpe Ratio Regression. Loss = (1 - portfolio_return)². Directly optimizes portfolio Sharpe. Noisier but higher ceiling."
+
+[[sections.items]]
+term = "Margin / ListNet"
+definition = "Pairwise ranking loss (margin: correct relative order) and listwise ranking loss (ListNet: top-1 probability distribution). Good for ranking tasks."
+
+[[sections.items]]
+term = "Mixed Precision"
+definition = "float16 for compute-heavy ops, float32 for critical ops. 30-40% speedup on CUDA and MPS with no accuracy loss."
+
+[[sections.items]]
+term = "RankGLU"
+definition = "Residual bottleneck GLU output head: direct linear path + gated nonlinear branch. Preserves ranking while adding controlled interactions."
+
+[[sections.items]]
+term = "MarketGate"
+definition = "SPY market features (returns, volatility, volume ratio) rescale stock features before the transformer. Regime-adaptive conditioning from MASTER (AAAI 2024)."
+
+[[sections.items]]
+term = "Walk-Forward"
+definition = "Multiple chronological train/val/test folds evaluated sequentially. Gold standard for financial ML — captures regime changes."
+
+[[sections.items]]
+term = "Z-Score Norm"
+definition = "Training targets normalized per-day: mean=0, std=1 after winsorizing extremes. Standard in ranking-aware models."
+
+[[sections]]
+id = "quickstart"
+type = "code_block"
+title = "Quick Start"
+icon = "play"
+code = """
+# 1. Install dependencies
+uv sync
+
+# 2. Train the model (MSE baseline)
+uv run python main.py --mode train
+
+# 3. Train with MSRR loss (gradient accumulation)
+uv run python main.py --mode train --loss msrr --grad-accum 4
+
+# 4. Ensemble training (5 seeds)
+uv run python main.py --mode train --loss msrr --seeds 5 --grad-accum 4
+
+# 5. Walk-forward validation
+uv run python main.py --mode train --walk-forward
+
+# 6. Get today's trading signals
+uv run python main.py --mode infer
+"""
+
+[[sections]]
+id = "stack"
+type = "stack"
+title = "Tech Stack"
+icon = "layers"
+
+[[sections.items]]
+name = "PyTorch"
+description = "deep learning framework"
+
+[[sections.items]]
+name = "numpy"
+description = "numerical computing"
+
+[[sections.items]]
+name = "pandas"
+description = "data manipulation"
+
+[[sections.items]]
+name = "scikit-learn"
+description = "preprocessing + calibration"
+
+[[sections.items]]
+name = "yfinance"
+description = "Yahoo Finance API"
+
+[[sections.items]]
+name = "unlockedpd"
+description = "accelerated rolling ops"
+
+[[sections.items]]
+name = "tqdm"
+description = "progress bars"
+
+[[sections.items]]
+name = "uv"
+description = "Python package manager"
