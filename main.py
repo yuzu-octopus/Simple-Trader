@@ -186,9 +186,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["train", "infer"],
+        choices=["train", "infer", "pretrain"],
         default="train",
-        help="train = train model + optimize threshold | infer = get trading signals for today",
+        help="train = train model + optimize threshold | infer = trading signals | pretrain = D6 pre-training",
     )
     parser.add_argument(
         "--resume",
@@ -233,6 +233,17 @@ def main() -> None:
         type=str,
         default=None,
         help="Load model from data/models/<path>/best.pt (e.g. 'colab/run1' or 'top/run1')",
+    )
+    parser.add_argument(
+        "--pretrain",
+        action="store_true",
+        help="Initialize training from pre-trained weights (data/models/pretrain/best.pt)",
+    )
+    parser.add_argument(
+        "--pretrain-epochs",
+        type=int,
+        default=None,
+        help="Override pretrain_epochs from config (default: 100)",
     )
     args = parser.parse_args()
 
@@ -289,6 +300,7 @@ def main() -> None:
             )
             n_folds = prepare_walk_forward_splits(features, targets, dates, config)
 
+        pretrain_path = config.pretrain_weights_path if args.pretrain else None
         fold_count = n_folds if args.walk_forward else 1
         for fold in range(fold_count):
             if args.walk_forward:
@@ -301,6 +313,7 @@ def main() -> None:
                     "n_seeds": args.seeds,
                     "grad_accum_steps": args.grad_accum,
                     "train_path": f"{config.features_path}/fold_{fold}.npz",
+                    "pretrain_path": pretrain_path,
                 }
                 from training.train import run_training as rt
 
@@ -315,11 +328,32 @@ def main() -> None:
                     loss_mode=args.loss,
                     n_seeds=args.seeds,
                     grad_accum_steps=args.grad_accum,
+                    pretrain_path=pretrain_path,
                 )
 
         print("\n=== Threshold Optimization ===")
         buy_t, sell_t = run_threshold_optimization(config)
         print(f"Optimal thresholds: buy > {buy_t:.2f}, sell < -{sell_t:.2f}")
+
+    elif args.mode == "pretrain":
+        print("\n=== D6 Pre-Training ===")
+        if args.pretrain_epochs is not None:
+            config.pretrain_epochs = args.pretrain_epochs
+        with np.load(f"{config.features_path}/train.npz") as data:
+            pt_features = data["features"]
+            pt_targets = data["targets"]
+            pt_market = data.get("market_state")
+        from training.pretrain import pretrain
+
+        pretrain(
+            config,
+            pt_features,
+            pt_targets,
+            pt_market,
+            loss_mode=args.loss,
+            resume=args.resume,
+            grad_accum_steps=args.grad_accum,
+        )
 
     else:
         print("\n=== Inference ===")

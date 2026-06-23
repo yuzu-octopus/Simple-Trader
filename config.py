@@ -72,3 +72,9 @@ class Config:
     model_save_path: str = "data/models/best.pt"
     features_path: str = "data/features"
     raw_data_path: str = "data/stocks"
+
+    pretrain_epochs: int = 100
+    pretrain_lr: float = 1e-4
+    pretrain_mask_ratio: float = 0.2
+    pretrain_top_n_days: int = 3
+    pretrain_weights_path: str = "data/models/pretrain/best.pt"

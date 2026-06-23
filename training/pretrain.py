@@ -1,0 +1,236 @@
+import itertools
+import math
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch import nn, optim
+from torch.nn.functional import cross_entropy, mse_loss
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
+
+from config import Config, get_device
+from src.utils import create_model
+from training.train import listnet_loss, margin_ranking_loss, msrr_loss
+
+PRETRAIN_CHECKPOINT_PATH = "data/models/pretrain/checkpoint.pt"
+
+
+def _csr_loss(pred, target, loss_mode):
+    if loss_mode == "msrr":
+        return msrr_loss(pred, target)
+    if loss_mode == "margin":
+        return margin_ranking_loss(pred, target)
+    if loss_mode == "listnet":
+        return listnet_loss(pred, target)
+    return mse_loss(pred, target)
+
+
+class TemporalOrderHead(nn.Module):
+    def __init__(self, n_days: int, n_classes: int):
+        super().__init__()
+        self.fc = nn.Linear(n_days, n_classes)
+
+    def forward(self, pooled_scores: torch.Tensor) -> torch.Tensor:
+        return self.fc(pooled_scores)
+
+
+def prepare_mpp(features, targets, mask_ratio=0.2, seed=42):
+    rng = np.random.RandomState(seed)
+    T, S, _ = features.shape
+    mask = rng.rand(T, S) < mask_ratio
+    masked = features.copy()
+    masked[mask] = 0.0
+    return masked, targets, mask
+
+
+def prepare_top(features, n_days=3, seed=42):
+    rng = np.random.RandomState(seed)
+    T, _S, _F = features.shape
+    perms = list(itertools.permutations(range(n_days)))
+    perm_to_label = {p: i for i, p in enumerate(perms)}
+    windows, labels = [], []
+    for t in range(T - n_days + 1):
+        window = features[t : t + n_days].copy()
+        perm = list(range(n_days))
+        rng.shuffle(perm)
+        shuffled = window[perm]
+        windows.append(shuffled)
+        inverse = tuple(np.argsort(perm))
+        labels.append(perm_to_label[inverse])
+    return np.stack(windows), np.array(labels), len(perms)
+
+
+def mpp_loss(pred, target, mask):
+    err = (pred - target) ** 2
+    return (err * mask.float()).sum() / (mask.sum() + 1e-8)
+
+
+def top_loss(logits, labels):
+    return cross_entropy(logits, labels)
+
+
+def pretrain(
+    config: Config,
+    features: np.ndarray,
+    targets: np.ndarray,
+    market_state: np.ndarray | None = None,
+    loss_mode: str = "mse",
+    loss_weights=(1.0, 0.5, 1.0),
+    resume: bool = False,
+    grad_accum_steps: int = 1,
+):
+    device = get_device()
+    model = create_model(config, device)
+    top_head = TemporalOrderHead(
+        config.pretrain_top_n_days, math.factorial(config.pretrain_top_n_days)
+    ).to(device)
+
+    mpp_x, mpp_y, mpp_mask = prepare_mpp(features, targets, config.pretrain_mask_ratio)
+    top_x, top_y, _top_nc = prepare_top(features, config.pretrain_top_n_days)
+    mkt = market_state if market_state is not None else np.zeros((len(features), 5))
+    mkt_t = torch.tensor(mkt, dtype=torch.float32)
+
+    mpp_loader = DataLoader(
+        TensorDataset(
+            torch.tensor(mpp_x, dtype=torch.float32),
+            torch.tensor(mpp_y, dtype=torch.float32),
+            torch.tensor(mpp_mask, dtype=torch.bool),
+            mkt_t,
+        ),
+        batch_size=config.batch_size,
+        shuffle=True,
+        drop_last=True,
+    )
+
+    top_loader = DataLoader(
+        TensorDataset(
+            torch.tensor(top_x, dtype=torch.float32),
+            torch.tensor(top_y, dtype=torch.long),
+        ),
+        batch_size=config.batch_size,
+        shuffle=True,
+        drop_last=True,
+    )
+
+    csr_loader = DataLoader(
+        TensorDataset(
+            torch.tensor(features, dtype=torch.float32),
+            torch.tensor(targets, dtype=torch.float32),
+            mkt_t,
+        ),
+        batch_size=config.batch_size,
+        shuffle=True,
+        drop_last=True,
+    )
+
+    all_params = list(model.parameters()) + list(top_head.parameters())
+    optimizer = optim.AdamW(
+        all_params, lr=config.pretrain_lr, weight_decay=config.weight_decay
+    )
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=config.pretrain_epochs
+    )
+    use_amp = device.type in ("cuda", "mps")
+    amp_scaler = torch.amp.GradScaler(device.type) if use_amp else None
+
+    resume_epoch = 0
+    best_loss = float("inf")
+    if resume and Path(PRETRAIN_CHECKPOINT_PATH).exists():
+        ckpt = torch.load(
+            PRETRAIN_CHECKPOINT_PATH, weights_only=True, map_location=device
+        )
+        model.load_state_dict(ckpt["model_state_dict"])
+        top_head.load_state_dict(ckpt["top_head_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        resume_epoch = ckpt["epoch"]
+        best_loss = ckpt["best_loss"]
+        tqdm.write(f"  Resumed from epoch {resume_epoch} (best_loss={best_loss:.6f})")
+
+    Path(config.pretrain_weights_path).parent.mkdir(parents=True, exist_ok=True)
+    epoch_bar = tqdm(
+        range(resume_epoch, config.pretrain_epochs),
+        desc="Pretraining",
+        unit="epoch",
+        file=sys.stderr,
+        initial=resume_epoch,
+        total=config.pretrain_epochs,
+    )
+
+    for epoch in epoch_bar:
+        model.train()
+        top_head.train()
+        total_loss = 0.0
+        mpp_iter = iter(mpp_loader)
+        top_iter = iter(top_loader)
+        csr_iter = iter(csr_loader)
+        n_batches = min(len(mpp_loader), len(top_loader), len(csr_loader))
+        optimizer.zero_grad()
+
+        for step in range(n_batches):
+            x_mpp, y_mpp, mask_mpp, m_mpp = [t.to(device) for t in next(mpp_iter)]
+            with torch.autocast(device_type=device.type, enabled=use_amp):
+                pred_mpp = model(x_mpp, market_state=m_mpp)
+                l_mpp = mpp_loss(pred_mpp, y_mpp, mask_mpp)
+
+            x_top, y_top = next(top_iter)
+            x_top, y_top = x_top.to(device), y_top.to(device)
+            B, N, S, F = x_top.shape
+            with torch.autocast(device_type=device.type, enabled=use_amp):
+                pred_top = model(x_top.reshape(B * N, S, F))
+                pooled = pred_top.mean(dim=1).reshape(B, N)
+                logits = top_head(pooled)
+                l_top = top_loss(logits, y_top)
+
+            x_csr, y_csr, m_csr = [t.to(device) for t in next(csr_iter)]
+            with torch.autocast(device_type=device.type, enabled=use_amp):
+                pred_csr = model(x_csr, market_state=m_csr)
+                l_csr = _csr_loss(pred_csr, y_csr, loss_mode)
+
+            w1, w2, w3 = loss_weights
+            loss = (w1 * l_mpp + w2 * l_top + w3 * l_csr) / (grad_accum_steps or 1) * 3
+
+            if use_amp:
+                amp_scaler.scale(loss).backward()
+            else:
+                loss.backward()
+
+            steps_since_update = (step + 1) % max(grad_accum_steps, 1)
+            if steps_since_update == 0 or step == n_batches - 1:
+                if use_amp:
+                    amp_scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(all_params, config.max_grad_norm)
+                if use_amp:
+                    amp_scaler.step(optimizer)
+                    amp_scaler.update()
+                else:
+                    optimizer.step()
+                optimizer.zero_grad()
+
+            total_loss += loss.item() * max(grad_accum_steps, 1)
+
+        scheduler.step()
+        avg_loss = total_loss / (n_batches // max(grad_accum_steps, 1) + 1)
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            torch.save(model.state_dict(), config.pretrain_weights_path)
+
+        if (epoch + 1) % 10 == 0:
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "top_head_state_dict": top_head.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "epoch": epoch + 1,
+                    "best_loss": best_loss,
+                },
+                PRETRAIN_CHECKPOINT_PATH,
+            )
+
+        epoch_bar.set_postfix(loss=f"{avg_loss:.6f}")
+
+    return model

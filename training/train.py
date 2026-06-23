@@ -85,6 +85,7 @@ def train(
     grad_accum_steps: int = 1,
     train_market: np.ndarray | None = None,
     val_market: np.ndarray | None = None,
+    pretrain_path: str | None = None,
 ) -> tuple[StockTransformer, StandardScaler]:
     scaler = StandardScaler()
     train_scaled = scale_features(
@@ -122,6 +123,11 @@ def train(
 
     device = get_device()
     model = create_model(config, device)
+    if pretrain_path and Path(pretrain_path).exists():
+        model.load_state_dict(
+            torch.load(pretrain_path, weights_only=True, map_location=device)
+        )
+        print(f"  Loaded pre-trained weights from {pretrain_path}")
     Path(config.model_save_path).parent.mkdir(parents=True, exist_ok=True)
     use_amp = device.type in ("cuda", "mps")
     amp_scaler = torch.amp.GradScaler(device.type) if use_amp else None
@@ -264,6 +270,7 @@ def train_seed(
     grad_accum_steps: int = 1,
     train_market: np.ndarray | None = None,
     val_market: np.ndarray | None = None,
+    pretrain_path: str | None = None,
 ) -> tuple[StockTransformer, StandardScaler]:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -290,6 +297,7 @@ def train_seed(
         resume_patience=resume_patience,
         train_market=train_market,
         val_market=val_market,
+        pretrain_path=pretrain_path,
     )
 
 
@@ -301,6 +309,7 @@ def run_training(
     grad_accum_steps: int = 1,
     train_path: str | None = None,
     val_path: str | None = None,
+    pretrain_path: str | None = None,
 ) -> tuple[StockTransformer, StandardScaler]:
     train_path = train_path or f"{config.features_path}/train.npz"
     val_path = val_path or f"{config.features_path}/val.npz"
@@ -335,6 +344,7 @@ def run_training(
                 grad_accum_steps=grad_accum_steps,
                 train_market=train_market,
                 val_market=val_market,
+                pretrain_path=pretrain_path,
             )
             models.append(m)
             scalers.append(s)
@@ -355,6 +365,7 @@ def run_training(
             grad_accum_steps=grad_accum_steps,
             train_market=train_market,
             val_market=val_market,
+            pretrain_path=pretrain_path,
         )
 
     save_scaler(scaler, f"{config.features_path}/scaler.json")

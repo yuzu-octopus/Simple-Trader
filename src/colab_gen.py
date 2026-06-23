@@ -30,6 +30,7 @@ def generate_colab_script(args: argparse.Namespace) -> str:
         "src/inference.py",
         "training/train.py",
         "training/threshold.py",
+        "training/pretrain.py",
     ]:
         files[p] = Path(p).read_text()
     for p in ["models/__init__.py", "src/__init__.py", "training/__init__.py"]:
