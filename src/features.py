@@ -122,9 +122,11 @@ def build_targets(
 
 
 def compute_market_state(
-    raw_data: dict[str, pd.DataFrame], dates: list[str]
+    raw_data: dict[str, pd.DataFrame],
+    dates: list[str],
+    market_ticker: str = "SPY",
 ) -> np.ndarray:
-    spy = raw_data.get("SPY")
+    spy = raw_data.get(market_ticker)
     if spy is None:
         return np.zeros((len(dates), 5))
     close = spy["Close"]

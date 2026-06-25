@@ -66,7 +66,10 @@ class PaperTrader:
                 req = CryptoLatestQuoteRequest(symbol_or_symbols=symbols)
             else:
                 req = StockLatestQuoteRequest(symbol_or_symbols=symbols)
-            quotes = self.data_client.get_stock_latest_quote(req)
+            if self.config.asset_class == "crypto":
+                quotes = self.data_client.get_crypto_latest_quote(req)
+            else:
+                quotes = self.data_client.get_stock_latest_quote(req)
         except Exception as e:
             logger.warning("Quote fetch failed: %s", e)
             return {}
@@ -111,7 +114,7 @@ class PaperTrader:
             except Exception as e:
                 logger.warning("Cancel failed for %s: %s", o.symbol, e)  # type: ignore[union-attr]
 
-    def submit_market_order(self, symbol: str, qty: int, side: OrderSide) -> dict:
+    def submit_market_order(self, symbol: str, qty: float, side: OrderSide) -> dict:
         order = MarketOrderRequest(
             symbol=symbol,
             qty=qty,
