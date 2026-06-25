@@ -1,6 +1,7 @@
 """Textual TUI for paper trading — stocks and crypto."""
 
 import asyncio
+import os
 from argparse import ArgumentParser
 from datetime import datetime
 from functools import partial
@@ -114,7 +115,7 @@ class MetricCard(Static):
 
 def _load_dotenv() -> None:
     """Load .env file if present (uv run doesn't auto-load it)."""
-    import os
+    # os already imported at module scope
 
     env_path = Path(".env")
     if env_path.exists():
@@ -426,6 +427,7 @@ class TradingApp(App):
 
 def main() -> None:
     _load_dotenv()
+    os.environ.setdefault("TQDM_DISABLE", "1")
     parser = ArgumentParser(description="Textual TUI paper trader")
     parser.add_argument(
         "--interval", type=int, default=15, help="Minutes between cycles"
