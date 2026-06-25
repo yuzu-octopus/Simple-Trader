@@ -146,11 +146,33 @@ def main():
         default=None,
         help="Override sell threshold (default: from training)",
     )
+    parser.add_argument(
+        "--asset-class",
+        choices=["stocks", "crypto"],
+        default="stocks",
+        help="Asset class to trade (default: stocks)",
+    )
+    parser.add_argument(
+        "--crypto-pairs",
+        choices=["top10", "all17"],
+        default="top10",
+        help="Number of crypto pairs (default: top10)",
+    )
     args = parser.parse_args()
 
     config = Config()
+    config.asset_class = args.asset_class
+    config.crypto_pairs = args.crypto_pairs
     config.trade_interval_minutes = args.interval
-    config.tickers = get_sp500_tickers()
+    if config.asset_class == "crypto":
+        from config import CRYPTO_PAIR_MAP
+
+        config.tickers = CRYPTO_PAIR_MAP[config.crypto_pairs]
+        config.raw_data_path = "data/crypto/raw"
+        config.features_path = "data/crypto/features"
+        config.model_save_path = "data/models/crypto/best.pt"
+    else:
+        config.tickers = get_sp500_tickers()
     print(f"Loaded {len(config.tickers)} tickers")
 
     buy_t, sell_t = load_threshold(config)

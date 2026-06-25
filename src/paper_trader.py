@@ -4,8 +4,8 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from alpaca.data import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestQuoteRequest
+from alpaca.data import CryptoHistoricalDataClient, StockHistoricalDataClient
+from alpaca.data.requests import CryptoLatestQuoteRequest, StockLatestQuoteRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
@@ -24,7 +24,10 @@ class PaperTrader:
             raise ValueError(msg)
         self.config = config
         self.trade_client = TradingClient(key, secret, paper=config.alpaca_paper)
-        self.data_client = StockHistoricalDataClient(key, secret)
+        if config.asset_class == "crypto":
+            self.data_client = CryptoHistoricalDataClient()
+        else:
+            self.data_client = StockHistoricalDataClient(key, secret)
         self.nyc = ZoneInfo("America/New_York")
         self._positions_cache: dict[str, dict] = {}
         self._account_cache: dict = {}
@@ -59,7 +62,10 @@ class PaperTrader:
         if not symbols:
             return {}
         try:
-            req = StockLatestQuoteRequest(symbol_or_symbols=symbols)
+            if self.config.asset_class == "crypto":
+                req = CryptoLatestQuoteRequest(symbol_or_symbols=symbols)
+            else:
+                req = StockLatestQuoteRequest(symbol_or_symbols=symbols)
             quotes = self.data_client.get_stock_latest_quote(req)
         except Exception as e:
             logger.warning("Quote fetch failed: %s", e)
@@ -77,6 +83,8 @@ class PaperTrader:
         return result
 
     def market_open(self) -> bool:
+        if self.config.asset_class == "crypto":
+            return True
         clock = self.trade_client.get_clock()
         return bool(clock.is_open)  # type: ignore[union-attr]
 
@@ -108,7 +116,9 @@ class PaperTrader:
             symbol=symbol,
             qty=qty,
             side=side,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=TimeInForce.GTC
+            if self.config.asset_class == "crypto"
+            else TimeInForce.DAY,
         )
         return self.trade_client.submit_order(order_data=order)
 

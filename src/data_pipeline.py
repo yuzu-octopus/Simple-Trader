@@ -1,8 +1,8 @@
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
-import tenacity
 import yfinance as yf
 from tqdm import tqdm
 
@@ -36,21 +36,23 @@ def fetch_stock_data(
     return data
 
 
-@tenacity.retry(
-    stop=tenacity.stop_after_attempt(3),
-    # wait_random_exponential adds jitter so concurrent agents don't thunder-herd
-    # against yfinance; bounded max=10 keeps total wait <= 30s for 3 attempts.
-    wait=tenacity.wait_random_exponential(multiplier=1, min=2, max=10),
-    reraise=True,
-)
-def _download_with_retry(ticker: str, start: str, end: str) -> pd.DataFrame:
-    df = yf.download(ticker, start=start, end=end, auto_adjust=True, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    # yfinance silently returns an empty frame for delisted/invalid tickers.
-    # Re-raise inside the retry so tenacity actually retries; the outer
-    # fetch_stock_data except logs and continues without this ticker.
-    if df.empty:
-        msg = f"yfinance returned empty data for {ticker}"
-        raise ValueError(msg)
-    return df
+def _download_with_retry(
+    ticker: str, start: str, end: str, attempts: int = 3
+) -> pd.DataFrame:
+    for attempt in range(attempts):
+        try:
+            df = yf.download(
+                ticker, start=start, end=end, auto_adjust=True, progress=False
+            )
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            if df.empty:
+                msg = f"yfinance returned empty data for {ticker}"
+                raise ValueError(msg)  # noqa: TRY301
+            return df  # noqa: TRY300
+        except Exception:
+            if attempt < attempts - 1:
+                time.sleep(2**attempt)
+                continue
+            raise
+    return None

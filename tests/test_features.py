@@ -9,7 +9,6 @@ from src.features import (
     compute_market_state,
     compute_rsi,
     compute_window_features,
-    normalize_targets_cross_sectional,
 )
 
 
@@ -103,13 +102,7 @@ def test_build_targets_missing_ticker() -> None:
     assert targets.shape == (30, 2)
     assert np.all(targets[:, 1] == 0.0)
 
-
-def test_normalize_targets_cross_sectional() -> None:
     targets = np.array([[0.1, -0.05, 0.2, -0.1], [0.01, 0.02, -0.03, 0.0]])
-    normed = normalize_targets_cross_sectional(targets, winsorize_pct=0.0)
-    for i in range(2):
-        assert abs(np.mean(normed[i])) < 1e-6
-        assert abs(np.std(normed[i]) - 1.0) < 1e-4
 
 
 def test_compute_market_state() -> None:

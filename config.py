@@ -1,5 +1,4 @@
 import os
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -35,11 +34,7 @@ def get_sp500_tickers() -> list[str]:
     headers = {"User-Agent": "TradingBot/1.0 (research project)"}
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
-    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-        f.write(resp.content)
-        tmp = f.name
-    tables = pd.read_html(tmp)
-    Path(tmp).unlink()
+    tables = pd.read_html(resp.text)
     return sorted(tables[0]["Symbol"].tolist())
 
 
@@ -95,9 +90,38 @@ class Config:
     pretrain_weights_path: str = "data/models/pretrain/best.pt"
 
     alpaca_api_key: str = ""
+    asset_class: str = "stocks"
+    crypto_pairs: str = "top10"
     alpaca_secret_key: str = ""
     alpaca_paper: bool = True
     trade_interval_minutes: int = 15
     trade_max_position_pct: float = 0.02
     trade_buy_qty: int = 10
     trade_sell_qty: int = 10
+
+
+CRYPTO_TOP10 = [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "DOGE/USD",
+    "XRP/USD",
+    "ADA/USD",
+    "AVAX/USD",
+    "LINK/USD",
+    "DOT/USD",
+    "MATIC/USD",
+]
+
+CRYPTO_ALL = [
+    *CRYPTO_TOP10,
+    "BCH/USD",
+    "FIL/USD",
+    "LTC/USD",
+    "NEAR/USD",
+    "SHIB/USD",
+    "TRX/USD",
+    "UNI/USD",
+]
+
+CRYPTO_PAIR_MAP = {"top10": CRYPTO_TOP10, "all17": CRYPTO_ALL}

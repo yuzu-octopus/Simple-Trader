@@ -86,30 +86,12 @@ def compute_window_features(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def normalize_targets_cross_sectional(
-    targets: np.ndarray, winsorize_pct: float = 0.025
-) -> np.ndarray:
-    T, _S = targets.shape
-    normalized = np.full_like(targets, 0.0)
-    for i in range(T):
-        day = targets[i]
-        lower = np.quantile(day, winsorize_pct)
-        upper = np.quantile(day, 1 - winsorize_pct)
-        day = np.clip(day, lower, upper)
-        mean = np.nanmean(day)
-        std = np.nanstd(day)
-        if std > 1e-8:
-            normalized[i] = (day - mean) / std
-    return np.nan_to_num(normalized, nan=0.0)
-
-
 def build_targets(
     raw_data: dict[str, pd.DataFrame],
     tickers: list[str],
     dates: list[str],
     max_return: float,
     clip_extreme: bool = True,
-    cross_sectional_norm: bool = False,
 ) -> np.ndarray:
     print("Computing training targets (next-day returns)...")
     n_dates, n_stocks = len(dates), len(tickers)
@@ -136,8 +118,6 @@ def build_targets(
         upper = np.quantile(valid, 1 - LABEL_CLIP_PCT)
         targets = np.clip(targets, lower, upper)
     targets[np.isnan(targets)] = 0.0
-    if cross_sectional_norm:
-        targets = normalize_targets_cross_sectional(targets)
     return targets
 
 

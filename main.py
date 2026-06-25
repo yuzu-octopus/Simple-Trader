@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from config import Config, get_sp500_tickers, is_distributed
+from src.crypto_pipeline import fetch_crypto_data
 from src.data_pipeline import fetch_stock_data
 from src.features import (
     build_feature_matrix,
@@ -23,6 +24,22 @@ from src.utils import load_threshold
 from trade import build_layout, make_trade_table
 from training.threshold import run_threshold_optimization
 from training.train import run_training
+
+
+def _fetch_data(config: Config) -> dict:
+    if config.asset_class == "crypto":
+        return fetch_crypto_data(
+            config.tickers,
+            config.train_start,
+            config.test_end,
+            config.raw_data_path,
+        )
+    return fetch_stock_data(
+        config.tickers,
+        config.train_start,
+        config.test_end,
+        config.raw_data_path,
+    )
 
 
 def _fold_metadata(config: Config) -> dict:
@@ -121,9 +138,7 @@ def prepare_walk_forward_splits(
 
 def prepare_data(config: Config) -> int:
     print("\n=== Data Preparation ===")
-    raw_data = fetch_stock_data(
-        config.tickers, config.train_start, config.test_end, config.raw_data_path
-    )
+    raw_data = _fetch_data(config)
     cached = load_cached_features(config.raw_data_path)
     if cached is not None:
         features, tickers, dates = cached
@@ -139,7 +154,11 @@ def prepare_data(config: Config) -> int:
     train_mask, val_mask, test_mask = _split_date_range(dates, config)
     targets = build_targets(raw_data, tickers, dates, config.label_max_return)
 
-    market_state = compute_market_state(raw_data, dates)
+    market_state = compute_market_state(
+        raw_data,
+        dates,
+        market_ticker="BTC/USD" if config.asset_class == "crypto" else "SPY",
+    )
 
     Path(config.features_path).mkdir(parents=True, exist_ok=True)
     np.savez(
@@ -426,6 +445,18 @@ def main() -> None:
         default=None,
         help="Override pretrain_epochs from config (default: 100)",
     )
+    parser.add_argument(
+        "--asset-class",
+        choices=["stocks", "crypto"],
+        default="stocks",
+        help="Asset class to trade (default: stocks)",
+    )
+    parser.add_argument(
+        "--crypto-pairs",
+        choices=["top10", "all17"],
+        default="top10",
+        help="Number of crypto pairs (default: top10)",
+    )
     args = parser.parse_args()
 
     if args.colab_template:
@@ -446,6 +477,16 @@ def main() -> None:
         return
 
     config = Config()
+    config.asset_class = args.asset_class
+    config.crypto_pairs = args.crypto_pairs
+    if config.asset_class == "crypto":
+        from config import CRYPTO_PAIR_MAP
+
+        config.tickers = CRYPTO_PAIR_MAP[config.crypto_pairs]
+        config.raw_data_path = "data/crypto/raw"
+        config.features_path = "data/crypto/features"
+        config.model_save_path = "data/models/crypto/best.pt"
+        print(f"Loaded {len(config.tickers)} crypto pairs ({config.crypto_pairs})")
     if args.model:
         config.model_save_path = f"data/models/{args.model}/best.pt"
     if not config.tickers:
@@ -478,18 +519,19 @@ def main() -> None:
                 n_folds = len(existing_folds)
                 print(f"  Reusing {n_folds} cached walk-forward folds")
             else:
-                raw_data = fetch_stock_data(
-                    config.tickers,
-                    config.train_start,
-                    config.test_end,
-                    config.raw_data_path,
-                )
+                raw_data = _fetch_data(config)
                 features, tickers, dates = build_feature_matrix(raw_data)
                 config.tickers = tickers
                 targets = build_targets(
                     raw_data, config.tickers, dates, config.label_max_return
                 )
-                market_state = compute_market_state(raw_data, dates)
+                market_state = compute_market_state(
+                    raw_data,
+                    dates,
+                    market_ticker="BTC/USD"
+                    if config.asset_class == "crypto"
+                    else "SPY",
+                )
                 n_folds = prepare_walk_forward_splits(
                     features, targets, market_state, dates, config
                 )

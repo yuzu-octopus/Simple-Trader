@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 
 from config import Config
+from src.crypto_pipeline import fetch_crypto_data
 from src.data_pipeline import fetch_stock_data
 from src.features import compute_features_for_date, compute_market_state
 from src.utils import load_model, load_scaler
@@ -33,8 +34,20 @@ def run_inference(
     target = _last_business_day()
     cache_key = (tuple(config.tickers), target)
     if cache_key not in _raw_data_cache:
-        _raw_data_cache[cache_key] = fetch_stock_data(
-            config.tickers, config.train_start, config.test_end, config.raw_data_path
+        _raw_data_cache[cache_key] = (
+            fetch_crypto_data(
+                config.tickers,
+                config.train_start,
+                config.test_end,
+                config.raw_data_path,
+            )
+            if config.asset_class == "crypto"
+            else fetch_stock_data(
+                config.tickers,
+                config.train_start,
+                config.test_end,
+                config.raw_data_path,
+            )
         )
     raw_data = _raw_data_cache[cache_key]
     all_dates = sorted(raw_data[next(iter(raw_data))].index)
@@ -43,7 +56,8 @@ def run_inference(
     features, tickers = compute_features_for_date(raw_data, latest_date)
     features = features[np.newaxis, :, :]
 
-    market = compute_market_state(raw_data, [latest_date])
+    market_ticker = "BTC/USD" if config.asset_class == "crypto" else "SPY"
+    market = compute_market_state(raw_data, [latest_date], market_ticker=market_ticker)
 
     scaler = load_scaler(f"{config.features_path}/scaler.json")
     scaled = scaler.transform(features.reshape(-1, config.n_features)).reshape(
