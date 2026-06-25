@@ -34,7 +34,9 @@ def get_sp500_tickers() -> list[str]:
     headers = {"User-Agent": "TradingBot/1.0 (research project)"}
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
-    tables = pd.read_html(resp.text)
+    import io
+
+    tables = pd.read_html(io.StringIO(resp.text))
     return sorted(tables[0]["Symbol"].tolist())
 
 

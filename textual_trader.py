@@ -4,6 +4,7 @@ import asyncio
 from argparse import ArgumentParser
 from datetime import datetime
 from functools import partial
+from pathlib import Path
 from typing import ClassVar
 from zoneinfo import ZoneInfo
 
@@ -109,6 +110,21 @@ class MetricCard(Static):
 
     def watch_value(self, new_value: str) -> None:
         self.update(f"{self.label}: {new_value}")
+
+
+def _load_dotenv() -> None:
+    """Load .env file if present (uv run doesn't auto-load it)."""
+    import os
+
+    env_path = Path(".env")
+    if env_path.exists():
+        for raw_line in env_path.read_text().splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            if key not in os.environ:
+                os.environ[key] = val
 
 
 class TradingApp(App):
@@ -370,11 +386,15 @@ class TradingApp(App):
     def action_toggle_asset(self) -> None:
         self._switch_asset("crypto" if self._asset_class == "stocks" else "stocks")
 
+    def action_search_themes(self) -> None:
+        self.search_themes()
+
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen())
 
 
 def main() -> None:
+    _load_dotenv()
     parser = ArgumentParser(description="Textual TUI paper trader")
     parser.add_argument(
         "--interval", type=int, default=15, help="Minutes between cycles"
