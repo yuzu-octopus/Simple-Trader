@@ -1,21 +1,102 @@
-"""Textual TUI for paper trading."""
+"""Textual TUI for paper trading — stocks and crypto."""
 
 import asyncio
 from argparse import ArgumentParser
 from datetime import datetime
+from functools import partial
 from typing import ClassVar
 from zoneinfo import ZoneInfo
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal
+from textual.command import Hit, Hits, Provider
+from textual.containers import Horizontal
 from textual.reactive import reactive
-from textual.widgets import DataTable, Footer, Header, Static
-from textual.worker import Worker
+from textual.screen import ModalScreen
+from textual.widgets import Button, DataTable, Footer, Header, Static
 
 from config import Config, get_sp500_tickers
 from src.inference import run_inference
 from src.paper_trader import PaperTrader
 from src.utils import load_threshold
+
+
+class HelpScreen(ModalScreen[None]):
+    """Keyboard shortcuts and usage help."""
+
+    CSS = """
+    HelpScreen {
+        align: center middle;
+    }
+    #help-dialog {
+        width: 50;
+        height: auto;
+        padding: 2;
+        background: $surface;
+        border: thick $primary;
+    }
+    #help-dialog Static {
+        margin-bottom: 1;
+    }
+    #help-dialog .title {
+        text-style: bold;
+        color: $accent;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(id="help-dialog"):
+            yield Static(
+                "[bold]Trading Bot — Keyboard & Commands[/]\n\n"
+                "[bold]Key[/]    [bold]Action[/]\n"
+                "───     ──────\n"
+                "R       Refresh data now\n"
+                "S       Toggle asset class (stocks / crypto)\n"
+                "C       Open theme picker\n"
+                "Cmd+P   Open command palette\n"
+                "H       Show this help\n"
+                "Q       Quit\n\n"
+                "[dim]Built with Textual · Alpaca Paper Trading[/]"
+            )
+
+    def on_key(self, event) -> None:
+        if event.key in ("escape", "h", "q"):
+            self.app.pop_screen()
+            event.prevent_default()
+
+
+class TradingCommands(Provider):
+    """Custom command palette commands."""
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        app = self.app
+        assert isinstance(app, TradingApp)
+
+        commands = [
+            ("Refresh data", "refresh", "Run inference + trade cycle now"),
+            (
+                "Toggle stocks/crypto",
+                "toggle_asset",
+                "Switch between S&P 500 and crypto",
+            ),
+            ("Open theme picker", "search_themes", "Browse and apply a theme"),
+            ("Show help", "show_help", "View keyboard shortcuts"),
+            ("Quit", "quit", "Exit the application"),
+        ]
+
+        for title, action, help_text in commands:
+            score = matcher.match(title)
+            if score > 0:
+                yield Hit(
+                    score,
+                    matcher.highlight(title),
+                    partial(self._run_action, app, action),
+                    help=help_text,
+                )
+
+    @staticmethod
+    def _run_action(app: TradingApp, action: str) -> None:
+        getattr(app, f"action_{action}")()
 
 
 class MetricCard(Static):
@@ -31,9 +112,39 @@ class MetricCard(Static):
 
 
 class TradingApp(App):
+    COMMANDS = App.COMMANDS | {TradingCommands}
+
     CSS = """
     Screen { layout: vertical; }
     Header { background: $primary; }
+    #asset-row {
+        height: 3;
+        padding: 0 1;
+        background: $surface;
+        align: center middle;
+    }
+    #asset-label {
+        width: auto;
+        content-align: left middle;
+        color: $text;
+        padding: 0 1;
+    }
+    Button {
+        width: 16;
+        margin: 0 1;
+    }
+    Button.-active {
+        background: $success;
+        color: $text;
+    }
+    Button.-inactive {
+        background: $surface;
+        color: $text-muted;
+    }
+    #market-dot {
+        width: 3;
+        content-align: center middle;
+    }
     #metric-row {
         height: 3;
         padding: 0 1;
@@ -56,8 +167,10 @@ class TradingApp(App):
 
     BINDINGS: ClassVar[list] = [
         ("r", "refresh", "Refresh"),
+        ("s", "toggle_asset", "Stocks/Crypto"),
+        ("c", "search_themes", "Theme"),
+        ("h", "show_help", "Help"),
         ("q", "quit", "Quit"),
-        ("t", "toggle_dark", "Toggle theme"),
     ]
 
     def __init__(
@@ -77,9 +190,15 @@ class TradingApp(App):
         self._nyc = ZoneInfo("America/New_York")
         self._cycle = 0
         self._equity_history: list[float] = []
+        self._asset_class = config.asset_class
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        with Horizontal(id="asset-row"):
+            yield Static("", id="market-dot")
+            yield Static("Trading:", id="asset-label")
+            yield Button("S&P 500", id="btn-stocks", variant="primary")
+            yield Button("Crypto", id="btn-crypto", variant="primary")
         with Horizontal(id="metric-row"):
             yield MetricCard("Equity")
             yield MetricCard("Cash")
@@ -95,8 +214,52 @@ class TradingApp(App):
         table.add_columns("Sym", "Pos", "%", "Score", "Trade", "P&L")
         table.cursor_type = "row"
         table.zebra_stripes = True
+        self._refresh_buttons()
         self.run_worker(self._refresh_cycle(), name="init")
         self.set_interval(self._interval, self._on_timer)
+
+    def _refresh_buttons(self) -> None:
+        is_crypto = self._asset_class == "crypto"
+        self.query_one("#btn-stocks", Button).classes = (
+            "" if not is_crypto else "inactive"
+        )
+        self.query_one("#btn-crypto", Button).classes = "" if is_crypto else "inactive"
+        dot = self.query_one("#market-dot", Static)
+        if is_crypto:
+            dot.update("[green]\u25cf[/] Crypto 24/7")
+        else:
+            try:
+                is_open = self._trader.market_open()
+                dot.update(
+                    f"[{'green' if is_open else 'red'}]●[/] {'Open' if is_open else 'Closed'}"
+                )
+            except Exception:
+                dot.update("[yellow]\u25cf[/] ?")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-stocks" and self._asset_class != "stocks":
+            self._switch_asset("stocks")
+        elif event.button.id == "btn-crypto" and self._asset_class != "crypto":
+            self._switch_asset("crypto")
+
+    def _switch_asset(self, target: str) -> None:
+        self._asset_class = target
+        self._config.asset_class = target
+        if target == "crypto":
+            from config import CRYPTO_PAIR_MAP
+
+            self._config.tickers = CRYPTO_PAIR_MAP[self._config.crypto_pairs]
+            self._config.raw_data_path = "data/crypto/raw"
+            self._config.features_path = "data/crypto/features"
+            self._config.model_save_path = "data/models/crypto/best.pt"
+        else:
+            self._config.tickers = get_sp500_tickers()
+            self._config.raw_data_path = "data/stocks"
+            self._config.features_path = "data/features"
+            self._config.model_save_path = "data/models/best.pt"
+        self._refresh_buttons()
+        self.notify(f"Switched to {target}", severity="information")
+        self.run_worker(self._refresh_cycle(), name="switch")
 
     async def _on_timer(self) -> None:
         self.run_worker(self._refresh_cycle(), name="cycle")
@@ -104,18 +267,18 @@ class TradingApp(App):
     async def _refresh_cycle(self) -> None:
         table = self.query_one("#signals", DataTable)
         status = self.query_one("#status-bar", Static)
-
         self._cycle += 1
         status.update(f"Cycle #{self._cycle} — running inference...")
 
         try:
-            if not self._trader.market_open():
+            if not self._trader.market_open() and self._asset_class != "crypto":
                 nxt = self._trader.next_open()
                 wait = (
                     nxt.replace(tzinfo=None)
                     - datetime.now(self._nyc).replace(tzinfo=None)
                 ).total_seconds()
                 status.update(f"Market closed — next open ~{max(1, int(wait / 60))}m")
+                self._refresh_buttons()
                 return
 
             account = await self._run_in_thread(self._trader.get_account)
@@ -139,7 +302,7 @@ class TradingApp(App):
             status.update(
                 f"Cycle #{self._cycle} | {now_str} | Next: ~{self._interval}s | {spark}"
             )
-
+            self._refresh_buttons()
         except Exception as e:
             status.update(f"Error: {e}")
             self.notify(str(e), severity="error")
@@ -169,8 +332,7 @@ class TradingApp(App):
             score = info["score"]
             pos = positions.get(ticker)
             t = trade_map.get(ticker)
-
-            pos_str = str(round(pos["qty"])) if pos else "—"
+            pos_str = str(round(pos["qty"])) if pos else "\u2014"
             alloc = (
                 f"{pos['market_value'] / equity * 100:.1f}%"
                 if pos and equity > 0
@@ -180,22 +342,17 @@ class TradingApp(App):
             pl_str = (
                 f"[green]${pl:+,.0f}[/]"
                 if pl > 0
-                else (f"[red]${pl:+,.0f}[/]" if pl < 0 else "—")
+                else (f"[red]${pl:+,.0f}[/]" if pl < 0 else "\u2014")
             )
-
-            trade_str = "—"
+            trade_str = "\u2014"
             if t:
                 act = t[2]
-                trade_str = (
-                    f"[green]BUY {int(t[1])}[/]"
-                    if act == "BUY"
-                    else (
-                        f"[red]SELL {int(t[1])}[/]"
-                        if act == "SELL"
-                        else f"[yellow]{act}[/]"
-                    )
-                )
-
+                if act == "BUY":
+                    trade_str = f"[green]BUY {int(t[1])}[/]"
+                elif act == "SELL":
+                    trade_str = f"[red]SELL {int(t[1])}[/]"
+                else:
+                    trade_str = f"[yellow]{act}[/]"
             table.add_row(ticker, pos_str, alloc, f"{score:+.4f}", trade_str, pl_str)
 
     def _sparkline(self, values, width=20):
@@ -210,8 +367,11 @@ class TradingApp(App):
         self.notify("Refreshing...", severity="information")
         self.run_worker(self._refresh_cycle())
 
-    def action_toggle_dark(self) -> None:
-        self.dark = not self.dark
+    def action_toggle_asset(self) -> None:
+        self._switch_asset("crypto" if self._asset_class == "stocks" else "stocks")
+
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
 
 
 def main() -> None:
