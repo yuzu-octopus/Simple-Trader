@@ -278,10 +278,6 @@ def _data_hash(raw_data_dir: str) -> str:
     return hasher.hexdigest()[:16]
 
 
-FEATURE_CACHE_PATH = "data/features/matrix.npz"
-HASH_CACHE_PATH = "data/features/matrix_hash.txt"
-
-
 def load_cached_features(
     raw_data_dir: str,
     cache_dir: str = "data/features",

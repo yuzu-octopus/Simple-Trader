@@ -56,7 +56,8 @@ def evaluate_model(seed_path: Path) -> float | None:
 
     cfg = Config()
     cfg.model_save_path = str(seed_path)
-    cfg.tickers = list(range(val_features.shape[1]))
+    # ponytail: cfg.tickers = range(N) for n_stocks count, actual names unused at inference
+    cfg.tickers = [str(i) for i in range(val_features.shape[1])]
 
     try:
         from config import get_device

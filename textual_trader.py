@@ -338,7 +338,7 @@ class TradingApp(App):
             self._config.model_save_path = "data/models/best.pt"
         self._refresh_buttons()
         self.notify(f"Switched to {target}", severity="information")
-        self.run_worker(self._refresh_cycle(), name="switch")
+        self.run_worker(self._refresh_cycle(), name="switch", exclusive=True)
 
     async def _on_timer(self) -> None:
         self.run_worker(self._refresh_cycle(), name="cycle", exclusive=True)
@@ -400,6 +400,11 @@ class TradingApp(App):
             self._refresh_buttons()
             self._err_strikes = 0
         except Exception as e:
+            self._err_strikes += 1
+            if self._err_strikes >= 3:
+                self.query_one("#market-dot", Static).update(
+                    "[red]\u25cf Disconnected[/]"
+                )
             status.update(f"Error: {e}")
             self.notify(str(e), severity="error")
 
@@ -408,9 +413,15 @@ class TradingApp(App):
         return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
     def _update_metrics(self, account: dict, positions: dict) -> None:
-        self.query_one("#metric-row").children[
-            0
-        ].value = f"${account.get('equity', 0):,.0f}"
+        prev = self._prev_equity if hasattr(self, "_prev_equity") else 0
+        curr = account.get("equity", 0)
+        card = self.query_one("#metric-row").children[0]
+        if prev and curr:
+            cls = "flash-up" if curr > prev else "flash-down"
+            card.add_class(cls)
+            card.set_timer(0.3, lambda: card.remove_class(cls))
+        self._prev_equity = curr
+        self.query_one("#metric-row").children[0].value = f"${curr:,.0f}"
         self.query_one("#metric-row").children[
             1
         ].value = f"${account.get('cash', 0):,.0f}"
@@ -453,7 +464,7 @@ class TradingApp(App):
 
     def action_refresh(self) -> None:
         self.notify("Refreshing...", severity="information")
-        self.run_worker(self._refresh_cycle())
+        self.run_worker(self._refresh_cycle(), name="cycle", exclusive=True)
 
     def action_interval_up(self) -> None:
         self._interval = min(3600, self._interval + 60)
