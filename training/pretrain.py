@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
 from tqdm import tqdm
 
 from config import Config, get_device, get_rank, is_distributed
-from src.utils import create_model, unwrap_model
+from src.utils import create_model, unwrap_model, wrap_ddp
 from training.train import listnet_loss, margin_ranking_loss, portfolio_mse_loss
 
 PRETRAIN_CHECKPOINT_PATH = "data/models/pretrain/checkpoint.pt"
@@ -85,11 +85,7 @@ def pretrain(
     top_head: nn.Module = TemporalOrderHead(
         config.pretrain_top_n_days, math.factorial(config.pretrain_top_n_days)
     ).to(device)
-    if is_distributed():
-        top_head = nn.parallel.DistributedDataParallel(
-            top_head,
-            device_ids=[device.index] if device.type == "cuda" else None,
-        )
+    top_head = wrap_ddp(top_head, device)
 
     mpp_x, mpp_y, mpp_mask = prepare_mpp(features, targets, config.pretrain_mask_ratio)
     top_x, top_y, _top_nc = prepare_top(features, config.pretrain_top_n_days)

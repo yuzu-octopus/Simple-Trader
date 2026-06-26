@@ -160,7 +160,9 @@ class PaperTrader:
             pos = positions.get(ticker)
             has_pos = pos is not None
 
-            if signal == "BUY" and not has_pos:
+            if (
+                signal == "BUY" and not has_pos
+            ):  # no-pyramid: won't add to existing positions
                 qty = self.config.trade_buy_qty
                 if equity <= 0:
                     trades.append((ticker, 0, "NO_EQUITY"))

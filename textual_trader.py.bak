@@ -12,8 +12,6 @@ import tqdm.std as _tqdm_std
 
 
 class _NoopTqdm:
-    """Silent no-op replacement; never creates multiprocessing locks."""
-
     def __init__(self, *a, **kw):  # noqa: ANN002,ANN003
         pass
 
@@ -36,12 +34,13 @@ class _NoopTqdm:
         return lambda *a, **kw: None  # noqa: ARG005
 
     @staticmethod
-    def write(s, file=None, end="\n", nolock=False) -> None:  # noqa: ARG004
+    def write(s, file=None, end="\n", nolock=False) -> None:  # noqa: ARG004  # noqa: ARG004
         print(s, file=file or sys.stderr, end=end)
 
 
 _tqdm_std.tqdm = _NoopTqdm
 
+"""Textual TUI for paper trading — stocks and crypto."""
 
 import asyncio
 from argparse import ArgumentParser
@@ -56,15 +55,7 @@ from textual.command import Hit, Hits, Provider
 from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import (
-    Button,
-    DataTable,
-    Footer,
-    Header,
-    RichLog,
-    Sparkline,
-    Static,
-)
+from textual.widgets import Button, DataTable, Footer, Header, Static
 
 from config import Config, get_sp500_tickers
 from src.inference import run_inference
@@ -223,10 +214,6 @@ class TradingApp(App):
         color: $text;
     }
     DataTable { height: 1fr; }
-    RichLog { height: 6; margin: 0 1; }
-    Sparkline { height: 1; }
-    .flash-up { background: $success 20%; }
-    .flash-down { background: $error 20%; }
     #status-bar {
         height: 1;
         padding: 0 1;
@@ -267,9 +254,6 @@ class TradingApp(App):
         self._nyc = ZoneInfo("America/New_York")
         self._cycle = 0
         self._equity_history: list[float] = []
-        self._err_strikes = 0
-        self._last_session_path = Path("data/last_session.json")
-        self._load_session()
         self._asset_class = config.asset_class
 
     def compose(self) -> ComposeResult:
@@ -286,8 +270,6 @@ class TradingApp(App):
             yield MetricCard("Positions")
             yield MetricCard("Cycle")
         yield DataTable(id="signals")
-        yield Sparkline(id="equity-spark")
-        yield RichLog(id="trade-log", highlight=True, max_lines=10)
         yield Static("Ready", id="status-bar")
         yield Footer()
 
@@ -341,7 +323,7 @@ class TradingApp(App):
             self._config.model_save_path = "data/models/best.pt"
         self._refresh_buttons()
         self.notify(f"Switched to {target}", severity="information")
-        self.run_worker(self._refresh_cycle(), name="switch", exclusive=True)
+        self.run_worker(self._refresh_cycle(), name="switch")
 
     async def _on_timer(self) -> None:
         self.run_worker(self._refresh_cycle(), name="cycle", exclusive=True)
@@ -379,64 +361,25 @@ class TradingApp(App):
 
             self._update_metrics(account, positions)
             self._update_table(table, signals, positions, trades, account)
-            log = self.query_one("#trade-log", RichLog)
-            log.write("[dim]" + "-" * 40 + "[/]")
-            for t in trades:
-                ts = datetime.now(self._nyc).strftime("%H:%M:%S")
-                act = t[2]
-                sym = t[0]
-                qty = t[1]
-                if act == "BUY":
-                    log.write(f"[green]{ts} BUY {int(qty)} {sym}[/]")
-                elif act == "SELL":
-                    log.write(f"[red]{ts} SELL {int(qty)} {sym}[/]")
-                elif "FAIL" in act:
-                    log.write(f"[red]{ts} {act} {sym}[/]")
-                elif act in ("NO_ASK", "MAX_POS_CAP", "NO_EQUITY"):
-                    log.write(f"[yellow]{ts} {act} {sym}[/]")
             now_str = datetime.now(self._nyc).strftime("%H:%M:%S ET")
-            self.query_one("#equity-spark", Sparkline).data = self._equity_history[-50:]
+            spark = self._sparkline(self._equity_history)
             status.update(
                 f"Cycle #{self._cycle} | {now_str} | Next: ~{self._interval // 60}m | "
-                f"Buy\u2248{self._buy_t:.2f} Sell\u2248{self._sell_t:.2f}"
+                f"Buy\u2248{self._buy_t:.2f} Sell\u2248{self._sell_t:.2f} | {spark}"
             )
             self._refresh_buttons()
-            self._err_strikes = 0
         except Exception as e:
-            self._err_strikes += 1
-            if self._err_strikes >= 3:
-                self.query_one("#market-dot", Static).update(
-                    "[red]\u25cf Disconnected[/]"
-                )
             status.update(f"Error: {e}")
-            err = str(e)
-            if err == self._last_error:
-                self._error_count += 1
-                msg = (
-                    f"{err} (\u00d7{self._error_count})"
-                    if self._error_count > 1
-                    else err
-                )
-            else:
-                self._last_error = err
-                self._error_count = 1
-                msg = err
-            self.notify(msg, severity="error")
+            self.notify(str(e), severity="error")
 
     async def _run_in_thread(self, fn, *args: object, **kwargs: object):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
     def _update_metrics(self, account: dict, positions: dict) -> None:
-        prev = self._prev_equity if hasattr(self, "_prev_equity") else 0
-        curr = account.get("equity", 0)
-        card = self.query_one("#metric-row").children[0]
-        if prev and curr:
-            cls = "flash-up" if curr > prev else "flash-down"
-            card.add_class(cls)
-            card.set_timer(0.3, lambda: card.remove_class(cls))
-        self._prev_equity = curr
-        self.query_one("#metric-row").children[0].value = f"${curr:,.0f}"
+        self.query_one("#metric-row").children[
+            0
+        ].value = f"${account.get('equity', 0):,.0f}"
         self.query_one("#metric-row").children[
             1
         ].value = f"${account.get('cash', 0):,.0f}"
@@ -462,9 +405,9 @@ class TradingApp(App):
             )
             pl = pos["unrealized_pl"] if pos else 0
             pl_str = (
-                f"[green]\u25b2${pl:+,.0f}[/]"
+                f"[green]${pl:+,.0f}[/]"
                 if pl > 0
-                else (f"[red]\u25bc-${abs(pl):,.0f}[/]" if pl < 0 else "\u2014")
+                else (f"[red]${pl:+,.0f}[/]" if pl < 0 else "\u2014")
             )
             trade_str = "\u2014"
             if t:
@@ -477,64 +420,40 @@ class TradingApp(App):
                     trade_str = f"[yellow]{act}[/]"
             table.add_row(ticker, pos_str, alloc, f"{score:+.4f}", trade_str, pl_str)
 
+    def _sparkline(self, values, width=20):
+        if not values:
+            return ""
+        mn, mx = min(values), max(values)
+        rng = mx - mn or 1
+        chars = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+        return "".join(chars[min(7, int((v - mn) / rng * 7))] for v in values[-width:])
+
     def action_refresh(self) -> None:
         self.notify("Refreshing...", severity="information")
-        self.run_worker(self._refresh_cycle(), name="cycle", exclusive=True)
-
-    def _save_session(self) -> None:
-        import json
-
-        Path("data").mkdir(exist_ok=True)
-        with self._last_session_path.open("w") as f:
-            json.dump(
-                {
-                    "interval": self._interval,
-                    "buy_t": self._buy_t,
-                    "sell_t": self._sell_t,
-                },
-                f,
-            )
-
-    def _load_session(self) -> None:
-        import json
-
-        if self._last_session_path.exists():
-            try:
-                d = json.loads(self._last_session_path.read_text())
-                self._interval = d.get("interval", self._interval)
-                self._buy_t = d.get("buy_t", self._buy_t)
-                self._sell_t = d.get("sell_t", self._sell_t)
-            except Exception:
-                pass
+        self.run_worker(self._refresh_cycle())
 
     def action_interval_up(self) -> None:
         self._interval = min(3600, self._interval + 60)
-        self._save_session()
         self.notify(f"Interval: {self._interval // 60}m", severity="information")
 
     def action_interval_down(self) -> None:
         self._interval = max(60, self._interval - 60)
-        self._save_session()
         self.notify(f"Interval: {self._interval // 60}m", severity="information")
 
     def action_threshold_up(self) -> None:
         self._buy_t = min(0.99, round(self._buy_t + 0.05, 2))
-        self._save_session()
         self.notify(f"Buy threshold: {self._buy_t:.2f}", severity="information")
 
     def action_threshold_down(self) -> None:
         self._buy_t = max(0.01, round(self._buy_t - 0.05, 2))
-        self._save_session()
         self.notify(f"Buy threshold: {self._buy_t:.2f}", severity="information")
 
     def action_sell_threshold_up(self) -> None:
         self._sell_t = min(0.99, round(self._sell_t + 0.05, 2))
-        self._save_session()
         self.notify(f"Sell threshold: {self._sell_t:.2f}", severity="information")
 
     def action_sell_threshold_down(self) -> None:
         self._sell_t = max(0.01, round(self._sell_t - 0.05, 2))
-        self._save_session()
         self.notify(f"Sell threshold: {self._sell_t:.2f}", severity="information")
 
     def action_toggle_asset(self) -> None:

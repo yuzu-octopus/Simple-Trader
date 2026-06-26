@@ -11,6 +11,16 @@ from config import Config, get_device, is_distributed
 from models.stock_model import StockTransformer
 
 
+def wrap_ddp(module: nn.Module, device: torch.device) -> nn.Module:
+    """Wrap in DistributedDataParallel if distributed; raise on non-CUDA DDP."""
+    if not is_distributed():
+        return module
+    if device.type != "cuda":
+        msg = f"DDP requires CUDA. Got device={device}."
+        raise RuntimeError(msg)
+    return DistributedDataParallel(module, device_ids=[device.index])
+
+
 def create_model(config: Config, device: torch.device | None = None) -> nn.Module:
     if device is None:
         device = get_device()

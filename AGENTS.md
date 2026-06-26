@@ -17,6 +17,7 @@ uv run python main.py --mode train --loss margin     # Ranking loss (pairwise ma
 uv run python main.py --mode train --loss listnet    # Listwise ranking loss
 uv run python trade.py --interval 15                 # Alpaca paper trading (Rich display)
 uv run python trade.py --interval 15 --headless      # Paper trading (logs only)
+uv run python textual_trader.py --interval 15        # Textual TUI paper trading
 uv run python main.py --mode trade --trade-interval 15  # Paper trading via main.py
 ```
 
@@ -63,6 +64,7 @@ src/
   inference.py       # On-demand inference (with market state)
   paper_trader.py    # Alpaca paper trading wrapper (TradingClient, reconcile, loop)
   utils.py           # Shared: model factory, scaler save/load, feature scaling
+textual_trader.py    # Textual TUI paper trading dashboard
 trade.py             # Standalone Alpaca paper trading script with Rich display
 config.py            # Dataclass: tickers, windows, model params
 main.py              # Entry point: --mode train|infer, --loss mse|msrr|margin|listnet
@@ -102,6 +104,20 @@ and must be preserved when modifying `src/paper_trader.py`:
   with `NO_EQUITY` rather than firing with bad notional math.
 - **Order failures are captured** in the `trades` list as
   `<action>_FAIL:<exception>` instead of raising out of the cycle.
+
+## Textual TUI Key Bindings
+
+| Key | Action |
+|-----|--------|
+| `R` | Refresh data now |
+| `S` | Toggle stocks / crypto |
+| `+` / `-` | Increase / decrease interval (±1 min) |
+| `[` / `]` | Adjust BUY threshold (±0.05) |
+| `{` / `}` | Adjust SELL threshold (±0.05) |
+| `C` | Open theme picker |
+| `H` | Show help |
+| `Q` | Quit |
+| `Ctrl+P` | Command palette |
 
 ## Timezones
 
@@ -148,4 +164,6 @@ use `ZoneInfo("America/New_York")` consistently.
 | `--force-features` | off | Rebuild feature matrix from scratch |
 | `--model <path>` | — | Load model from `data/models/<path>/best.pt` |
 | `--colab-template` | off | Generate self-contained script (Colab + Kaggle auto-detect) |
+| `--asset-class` | `stocks` | `stocks` or `crypto` — switches data pipeline and model |
+| `--crypto-pairs` | `top10` | `top10` or `all17` — crypto universe size |
 | `torchrun` | — | `torchrun --nproc_per_node=N uv run python main.py --mode train` for DDP |

@@ -270,12 +270,14 @@ def compute_features_for_date(
 
 
 def _data_hash(raw_data_dir: str) -> str:
-    hasher = hashlib.sha256()
-    for f in sorted(Path(raw_data_dir).iterdir()):
-        if f.suffix == ".csv":
-            stat = f.stat()
-            hasher.update(f"{f.name}:{stat.st_mtime}:{stat.st_size}".encode())
-    return hasher.hexdigest()[:16]
+    import zlib
+
+    parts = []
+    for p in sorted(Path(raw_data_dir).glob("*.csv")):
+        content = p.read_bytes()
+        crc = f"{zlib.crc32(content[:4096]):08x}"
+        parts.append(f"{p.name}|m={p.stat().st_mtime}|s={p.stat().st_size}|c={crc}")
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
 def load_cached_features(

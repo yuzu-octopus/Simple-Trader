@@ -1,35 +1,27 @@
-# Fix Plan — Full Audit of Recent Changes
+# Fix Plan — Unresolved Items Only
 
-**Scope:** the 25 most recent commits (Textual TUI, crypto pipeline, Alpaca/Colab, Rich UI, DDP, threshold/inference refactors).
-**Validation baseline:** `ruff check` ✅ · `ruff format --check` ✅ (28 files) · `pytest` 75/75 ✅ · `mypy` 48 errors (mostly import-untyped noise from unstubbed libs).
+**Last full audit:** 25 commits covering Textual TUI, crypto pipeline, Alpaca/Colab, Rich UI, DDP, threshold/inference refactors.
+**Last sync:** commit `d87f3b5` (`fix: address fix-plan.md — C1, H1-H4, M1-M3, L1-L2, N1-N10`, +493/-65 across 12 source files).
+**Current validation baseline:** `ruff check` ✅ · `ruff format --check` ✅ · `pytest` 76/76 ✅ · `mypy` import-untyped silenced (N10 ✅).
 
----
-
-## CRITICAL (silent correctness regressions)
-
-> _Findings here don't show up in tests, but will fire under realistic conditions._
-
-### C1. `_fold_metadata()` fingerprint is missing `tickers` and `asset_class` — walk-forward cache can be silently reused across universe changes
-
-**Where:** `main.py` · `_fold_metadata()` (≈lines 38-50).
-
-**Issue:** `_fold_metadata` covers `wf_window_size`, `wf_val_size`, `wf_test_size`, `wf_step_size`, `train_start`, `test_end`, `label_max_return`, `n_features`. But `n_features = features_per_window * n_windows` does **not** depend on the ticker universe. So if you train S&P 500 (503 stocks) once with `--walk-forward`, then run `--walk-forward` against `--crypto-pairs all17` (17 pairs) and don't `--force-features`, the fingerprint matches — and the cached `fold_i_train.npz` slices contain a `(T, 503, 120)` array reshaped for the new `(T, 17, 120)` model. Downstream either crashes on `Emb(n_stocks)` mismatch, or worse, indexes garbage.
-
-**Minimal fix:** add to the dict returned by `_fold_metadata`:
-```python
-"asset_class": config.asset_class,
-"crypto_pairs": config.crypto_pairs,
-"n_stocks": config.n_stocks,
-```
-**Severity:** **CRITICAL** — silent data corruption under realistic toggle scenarios.
+> _This plan now lists **only items still open** following `d87f3b5`. The original audit (16 closed items) is preserved at the bottom as a "Resolved" reference table for context._
 
 ---
 
-### C2. `top_head` DDP wrap in `training/pretrain.py` has no CUDA-only guard — but currently masked by `create_model` raising first
+## STILL OPEN — Critical & High
 
-**Where:** `training/pretrain.py` (≈lines 88-92).
+> _Zero items in these tiers remain after `d87f3b5`._
 
-**Issue:**
+None.
+
+---
+
+## STILL OPEN — Medium
+
+### M2. `pretrain.py` `top_head` DDP wrap has no CUDA-only guard (original C2)
+
+**Where:** `training/pretrain.py` lines ~88-92.
+
 ```python
 top_head = TemporalOrderHead(...).to(device)
 if is_distributed():
@@ -37,387 +29,283 @@ if is_distributed():
         top_head, device_ids=[device.index] if device.type == "cuda" else None,
     )
 ```
-There's no `if device.type != "cuda": raise`. The same bug class as the one previously fixed in `src/utils.create_model`. In practice it is masked because `model = create_model(config, device)` runs first and raises on MPS+DDP before reaching this line. So we'll only crash here if someone refactors the order or skips `create_model`.
 
-**Minimal fix:** mirror the `create_model` guard:
+There is no `if device.type != "cuda": raise RuntimeError(...)` mirroring the guard already in `create_model` (`src/utils.py:34-37`). It is currently masked because `model = create_model(config, device)` runs first and raises on MPS+DDP before reaching this line. So this is a latent footgun that fires the moment `pretrain.py` is refactored to instantiate `top_head` before `create_model`, or when someone adds a "use existing weights" fast path.
+
+**Minimal fix (factor a helper for symmetry):**
+
 ```python
-if is_distributed():
+# src/utils.py
+def wrap_ddp(module: nn.Module, device: torch.device) -> nn.Module:
+    if not is_distributed():
+        return module
     if device.type != "cuda":
         raise RuntimeError(f"DDP requires CUDA. Got device={device}.")
-    top_head = nn.parallel.DistributedDataParallel(top_head, device_ids=[device.index])
+    return nn.parallel.DistributedDataParallel(module, device_ids=[device.index])
 ```
-Or factor a `_wrap_ddp(module)` helper in `src/utils.py` so both call sites share the guard.
 
-**Severity:** **CONDITIONAL CRITICAL** — false positive today, a footgun the moment the call order changes.
+Then both `train.py` and `pretrain.py` call `wrap_ddp(model, device)` / `wrap_ddp(top_head, device)`. One canonical guard, two call sites.
+
+**Severity:** **MEDIUM (was CONDITIONAL CRITICAL)** — false positive today, becomes critical on the next refactor.
 
 ---
 
-## HIGH (real bugs likely to fire)
+## STILL OPEN — Low
 
-### H1. `time.sleep(min(wait, 300))` will raise `ValueError` when `next_open < now`
+### L3. `textual_trader` globally monkey-patches `tqdm` at import time
 
-**Where:** `trade.py` line 221, `main.py` line 264.
+**Where:** `textual_trader.py` (top-of-file `_NoopTqdm` block + `_tqdm_std.tqdm = _NoopTqdm`).
 
-**Issue:** Right at market close, `clock.next_open` is sometimes briefly in the past while the clock state is being updated. `wait = (nxt - now).total_seconds()` then returns a negative number. `min(-1, 300) = -1`. `time.sleep(-1)` raises `ValueError: sleep length must be non-negative`. The whole trading loop dies instead of just yielding for 5 minutes.
+Any module that imports `textual_trader` (e.g. `python -c "import textual_trader"`, or a test accidentally importing it) silently replaces the global `tqdm` class for the rest of the process. Downstream tqdm progress bars in tests become no-ops → real failures masquerade as silent successes.
 
-**Minimal fix:** clamp both ends.
+**Minimal fix:** scope the patch inside the App lifecycle.
+
 ```python
-time.sleep(max(0.0, min(wait, 300)))
+class TradingApp(App):
+    def on_mount(self) -> None:
+        self._orig_tqdm = tqdm_module.tqdm
+        tqdm_module.tqdm = _NoopTqdm
+        # ...existing on_mount body...
+
+    def on_unmount(self) -> None:
+        tqdm_module.tqdm = self._orig_tqdm
 ```
-**Severity:** **HIGH** — fires deterministically at market-close boundary conditions.
+
+**Severity:** **LOW** — debug & test hygiene, not a runtime correctness bug.
 
 ---
 
-### H2. `crypto_pipeline.fetch_crypto_data` writes crypto feature cache to the same fixed path as stocks — feature matrix is silently overwritten when switching asset classes
+### L4. `_NoopTqdm.write` references `sys` defined later in the same module
 
-**Where:** `src/features.py` lines 272-273.
+**Where:** `textual_trader.py` lines ~8-32.
 
-```python
-FEATURE_CACHE_PATH = "data/features/matrix.npz"
-HASH_CACHE_PATH = "data/features/matrix_hash.txt"
-```
-Even when `config.features_path = "data/crypto/features"`, both `save_cached_features` and `load_cached_features` write and read from this fixed root path. Asset-class switch cleanly via the hash mismatch (`_data_hash` uses `raw_data_dir` so the hash differs), but every switch triggers a **full 30-minute rebuild** because the previously cached asset's feature matrix has been overwritten with the new one.
+`write()` body uses `sys.stderr`, and `import sys` is in the same file but below the class. Works by accident because Python evaluates the function body lazily on first call, not at class instantiation. A future refactor (`import sys` moved, file split, conditional import) breaks this silently.
 
-**Minimal fix:** parameterize cache path from the caller:
-```python
-def save_cached_features(features, tickers, dates, raw_data_dir, cache_pathdir):
-    ...
-    Path(cache_pathdir).mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(f"{cache_pathdir}/matrix.npz", ...)
-    Path(f"{cache_pathdir}/matrix_hash.txt").write_text(_data_hash(raw_data_dir))
-```
-Pass `cache_pathdir=config.features_path` from `main.py`/`textual_trader.py`. Remove the module-level constants.
+**Minimal fix:** move `import sys` to the top of the file, immediately after `from textual import …`. Or pin it inside `class _NoopTqdm` as a default arg `sys=sys_imported_above`.
 
-**Severity:** **HIGH** — every asset-class switch costs ~30 minutes of CPU. Compound issue, not a correctness bug.
+**Severity:** **LOW** — order-fragility only.
 
 ---
 
-### H3. `[BUY` may execute without a position-cap check when `ask` is `None`
+### L5. `cfg.tickers = list(range(N))` in `eval_colab` is a confusing stopgap
 
-**Where:** `src/paper_trader.py` lines 167-184 (`reconcile`).
+**Where:** `eval_colab.py` line ~60 (the line still works, just confusing).
+
+Setting `cfg.tickers = [0, 1, 2, ..., N-1]` is a placeholder that exploits the `stock_embed` model's tolerance for integer indices. Readers see `cfg.tickers = [0, 1, 2, …]` and reasonably conclude the model now takes numeric tickers everywhere.
+
+**Minimal fix:** introduce a thin helper that signals intent.
 
 ```python
-ask = quotes.get(ticker, {}).get("ask")
-if ask is None or ask <= 0:
-    logger.warning("No usable ask for %s; skipping position-cap check", ticker)
-elif qty * ask > max_pos_value:
-    trades.append((ticker, 0, "MAX_POS_CAP"))
-    continue
-try:
-    self.submit_market_order(ticker, qty, OrderSide.BUY)   # ← still submits!
-    ...
+# config.py
+def set_n_stocks(cfg: "Config", n: int) -> None:
+    """Override stock-universe size without mutating cfg.tickers (placeholder indices only)."""
+    cfg.n_stocks = n  # used by stock_model.Emb(n_stocks)
 ```
-The "skip the cap check" branch actually **falls through to a buy**. The test `test_position_cap_misses_ask_logs_warning` documents this as "paper mode" behavior, but the logic is exactly backwards: when a cap check cannot be performed, the safe default is to **not trade**, not to trade. Setting `config.alpaca_paper = False` (live trading) would still submit un-capped orders.
 
-**Minimal fix:** invert the fallback.
-```python
-if ask is None or ask <= 0:
-    logger.warning("No usable ask for %s; refusing to buy without position-cap check", ticker)
-    trades.append((ticker, 0, "NO_ASK"))
-    continue
-```
-And update `test_position_cap_misses_ask_logs_warning` to expect `"NO_ASK"` instead of `"BUY"`.
+`eval_colab.py` becomes `set_n_stocks(cfg, val_features.shape[1])`. No `cfg.tickers` mutation.
 
-**Severity:** **HIGH** — specifically bad in the live-trading failure mode (silent over-allocation).
+**Severity:** **LOW** — code-clarity / future-proofing.
 
 ---
 
-### H4. `get_orders()` in `cancel_open_orders(symbol=None)` path cancels ALL orders — dead but dangerous
+## STILL OPEN — Nitpicks
 
-**Where:** `src/paper_trader.py` lines 102-117.
+### N2. `src/features.py _data_hash` hashes filename + mtime + size, not CSV content
+
+**Where:** `src/features.py` (post-`d87f3b5` `_data_hash`).
+
+Replacing a CSV with byte-identical content preserves the hash → cache hit on logically different data. Unlikely in practice (raw_data cache is append-only), but cheap to defend.
+
+**Minimal fix:** add a CRC32 over the first/last 4 KB.
 
 ```python
-def cancel_open_orders(self, symbol: str | None = None) -> None:
-    try:
-        if symbol:
-            orders = self.trade_client.get_orders(
-                filter=GetOrdersRequest(symbols=[symbol] if symbol else None)
-            )
-        else:
-            orders = self.trade_client.get_orders()    # ← blanket
-    ...
-```
-The `if symbol:` branch already guarantees `symbol` truthy, so the inner ternary `symbols=[symbol] if symbol else None` is dead. The function is currently only called with concrete tickers from `reconcile`, so it's a no-op risk — but the public `symbol: str | None = None` signature advertises "blanket cancel" as a feature. A future caller (e.g., a daily-flatten utility) would accidentally cancel everything.
+import zlib
 
-**Minimal fix:** tighten signature and remove the dead branch.
-```python
-def cancel_open_orders(self, symbol: str) -> None:
-    orders = self.trade_client.get_orders(filter=GetOrdersRequest(symbols=[symbol]))
+def _data_hash(data_dir: str) -> str:
+    parts = []
+    for p in sorted(Path(data_dir).glob("*.csv")):
+        h = hashlib.md5()
+        h.update(p.read_bytes()[:4096])
+        with p.open("rb") as f:
+            f.seek(-4096, 2)
+            h.update(f.read())
+        parts.append(f"{p.name}|m={p.stat().st_mtime}|s={p.stat().st_size}|h={h.hexdigest()[:8]}")
+    return hashlib.md5("|".join(parts).encode()).hexdigest()
 ```
-Update `test_cancel_does_not_call_blancket_cancel` (also typo: "blancket" → "blanket").
 
-**Severity:** **HIGH** — API surface bug; latent footgun.
+**Severity:** NIT — defensive only.
 
 ---
 
-## MEDIUM
+### N4. `walk-forward` writes `fold_i_test.npz` but no consumer reads it
 
-### M1. `optimize_threshold` runs an O(candidates²) grid search that grinds on large universes
+**Where:** `main.py` `prepare_walk_forward_splits` still creates the file even though only `fold_i_train.npz` / `fold_i_val.npz` are loaded downstream (post-`d87f3b5`).
 
-**Where:** `training/threshold.py`.
+~15% wasted disk per walk-forward build. Trivial fix — drop the file or comment why it persists (debugging convenience for ad-hoc eval).
 
-With `--loss msrr` and the default `upper = max(0.5, min(max_abs, 2.0))`, the loop does up to `200 × 200 = 40_000` iterations; each one calls `np.where(...)` on a `(T, S)` array. For S=503 stocks × T≈300 days × ~40k iterations → ~6 B element ops; expect ~20-40 s of main thread blocking per training run.
+**Minimal fix:** either delete the test save block, or add a comment "kept for ad-hoc re-eval — consumers run via `--resume --model fold_<i>` which loads this".
 
-**Minimal fix:** vectorize the inner loop, OR coarsen the grid (acceptable: 0.05 spacing), OR cache `(signals == 1).sum(axis=1)` once per candidate.
-```python
-# Quick win: grid spacing 0.05 instead of 0.01
-candidates = np.arange(0.0, upper + 0.05, 0.05)
-```
-This drops the inner loop from 40k → 1.6k iterations, costing some threshold-resolution precision (<0.05 in worst case, fine for Sharpe-optimal tuning).
-
-**Severity:** **MEDIUM** — UX/perf, not correctness.
+**Severity:** NIT.
 
 ---
 
-### M2. DDP scaler comment is wrong; the broadcast is structurally redundant
+### N7. `reconcile` BUY logic doesn't expose the "no pyramid" rule
 
-**Where:** `training/train.py` lines 109-122.
+**Where:** `src/paper_trader.py` `reconcile()` (unchanged in `d87f3b5`).
+
+If BUY fires and `has_pos` is true, the position is duplicated (`held + qty`). The code is correct given momentum-style signal averaging, but readers will wonder why we don't gate on `has_pos`. A 1-line comment explaining the intentional averaging-on-add rule covers it.
+
+**Minimal fix:** `reconcile()` BUY branch — add comment above the position-cap check:
 
 ```python
-if is_distributed():
-    import torch.distributed as dist
-    # Each rank independently fit its own StandardScaler on its data
-    # partition.
-    mean_t = torch.tensor(scaler.mean_, dtype=torch.float32)
-    var_t = torch.tensor(scaler.var_, dtype=torch.float32)
-    dist.broadcast(mean_t, src=0)
-    dist.broadcast(var_t, src=0)
-    scaler.mean_ = mean_t.numpy()
-    ...
+# BUY intentionally adds to held positions (signal averaging by design).
+# To enforce "no pyramid", gate here on `held == 0` before the cap check.
 ```
-`train_features` is loaded on every rank from the same `.npz` file before `DistributedSampler` slices the `DataLoader`. So every rank runs `scaler.fit(train_features.reshape(-1, F))` on the **same full data** and gets identical numbers. The broadcast is harmless-but-redundant, and the comment misleads.
 
-**Minimal fix:** drop the broadcast block and rewrite the comment.
-```python
-# All ranks load the same npz, so scaler.fit sees the full data on
-# every rank — results are already identical. No cross-rank sync needed.
-```
-**Severity:** **MEDIUM** — confusing comment + dead code path; reviewers will misunderstand the design.
+**Severity:** NIT — docs.
 
 ---
 
-### M3. `_raw_data_cache` is unbounded — no LRU, no eviction, no per-day cap
+### N8. `textual_trader._fstring` uses inline table text — `tqdm`'s `_from_url` macro could shrink by ~30 lines
 
-**Where:** `src/inference.py` line 16.
+**Where:** `textual_trader.py`.
 
-```python
-_raw_data_cache: dict[tuple, dict[str, pd.DataFrame]] = {}
-```
-Each entry holds n_tickers × 5-column DataFrames (~50 KB at n_tickers=503). Over a week-long bot run in the same Python process, that grows linearly and is never reclaimed.
+Minor — included only because ruff `tab` already accepts the macro form and `d87f3b5` touched this file. Pure readability.
 
-**Minimal fix:** either hook a size guard in `run_inference`, or limit to "today only".
-```python
-if len(_raw_data_cache) > 1:                       # keep only the latest day
-    _raw_data_cache.clear()
-_raw_data_cache[cache_key] = ...
-```
-**Severity:** **MEDIUM** — long-running-bot memory creep.
+**Severity:** NIT.
 
 ---
 
-## LOW
+## STILL OPEN — UX / UI (entire research-backed workstream)
 
-### L1. `eval_colab` is hardcoded `cuda` else `cpu` — Apple Silicon users fall back to CPU
+> _None of the UX items from the earlier research pass have been addressed. The bug-fix commit was orthogonal — this is the next PR stream. Listed in priority order; impact × risk in legend._
 
-**Where:** `eval_colab.py` line ~67.
+### Bucket A — Drop-in Textual widgets (highest payoff, smallest diff)
 
-```python
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-```
+| ID | Item | Where | Status (after d87f3b5) |
+|----|------|-------|------------------------|
+| **UX1** | Replace manual `_sparkline()` string-builder with built-in `Sparkline` | `textual_trader.py` — drop `_sparkline` method | **OPEN** |
+| **UX2** | `Digits` widget for Equity/Cash headline numbers | `MetricCard` for equity/cash | **OPEN** |
+| **UX3** | `RichLog` panel for trade audit trail (`[HH:MM:SS] BUY 10 AAPL @ $X`) | `compose` below `DataTable` | **OPEN** |
+| **UX4** | `ProgressBar` (indeterminate) for "inference running" | Top right of metric row | **OPEN** |
+| **UX5** | `TabbedContent` for `/Stocks/Crypto/Tuning` tabs (replaces the two `Button`s) | Top asset row | **OPEN** |
+| **UX6** | `Collapsible` around the threshold-tuning controls | Tuning tab | **OPEN** |
+| **UX7** | `MarkdownViewer` for an in-app "Strategy Notes" screen | New screen via `App.SCREENS` | **OPEN** |
 
-**Minimal fix:**
-```python
-from config import get_device
-device = get_device()
-```
-**Severity:** **LOW** — Apple Silicon eval is slow but converges; works for the target (Colab = CUDA).
+### Bucket B — Real-time feedback / staleness (no new infrastructure)
 
----
+| ID | Item | Where | Status |
+|----|------|-------|--------|
+| **UX8** | Bloomberg-style flash on equity change | `MetricCard.watch_value` | **OPEN** |
+| **UX9** | "Last refreshed Xm ago" indicator in header | `Header` right slot | **OPEN** |
+| **UX10** | Row-level position-size visual (yellow → red as % of cap) | `_update_table` per-row | **OPEN** |
+| **UX11** | Color-blind-safe pairings: P&L column uses `▲`/`▼` alongside red/green | `_update_table` P&L formatting | **OPEN** |
+| **UX12** | Tooltips on the metric cards + main buttons | `MetricCard.__init__` + Buttons | **OPEN** |
+| **UX13** | De-duplicated error toasts | `_refresh_cycle` error branch | **OPEN** |
+| **UX14** | Hotkey hint footer bar (lazygit-style) | Replace/augment `Footer` | **OPEN** |
 
-### L2. `textual_trader` runs each tick interval without worker-exclusivity
+### Bucket C — Confirmation / safety UX
 
-**Where:** `textual_trader.py` `_on_timer` and `action_refresh`.
+| ID | Item | Where | Status |
+|----|------|-------|--------|
+| **UX15** | Liquidate-all confirmation modal (L → Y/Enter required) | New `LiquidateModal` class + binding | **OPEN** |
+| **UX16** | Threshold-bound arrow-key confirmation (>0.95 prompts) | `action_threshold_up` | **OPEN** |
+| **UX17** | Disconnect-strike indicator on market-dot (3 consecutive errors) | `_refresh_cycle` error branch | **OPEN** |
 
-If `run_worker(self._refresh_cycle(), name="cycle")` fires while a previous cycle is still awaiting `loop.run_in_executor`, Textual queues the new worker. Overlapping cycles can issue duplicate Alpaca calls. Also no guard against re-entrancy on `action_refresh`.
+### Bucket D — Architectural roadmap (separate PR)
 
-**Minimal fix:**
-```python
-self.run_worker(self._refresh_cycle(), name="cycle", exclusive=True)
-```
-**Severity:** **LOW** — mitigates UI-API race but doesn't break correctness because `reconcile` is idempotent on Alpaca.
+| ID | Item | Effort | Status |
+|----|------|--------|--------|
+| **UX18** | Alpaca WebSocket: `TradingStream.subscribe_trade_updates` replaces 15-min REST poll | 2-3d | **OPEN** |
+| **UX19** | Live market data stream (`StockDataStream`) for active positions | 1-2d | **OPEN** |
+| **UX20** | Multi-screen app stack (Dashboard / Tuning / Logs / Backtest / Notes) | 1d | **OPEN** |
+| **UX21** | User-configurable DataTable columns (saved to `~/.tradingbot/layout.json`) | 1d | **OPEN** |
+| **UX22** | Strategy inspector (Model output vs consensus) | 0.5d | **OPEN** |
 
----
+### Bucket E — Quick misc (≤5 lines each)
 
-### L3. `textual_trader.py` globally monkey-patches `tqdm` at import-time
-
-**Where:** `textual_trader.py` (top of file).
-
-```python
-_tqdm_std.tqdm = _NoopTqdm
-```
-Any module that imports `textual_trader` (e.g. for a quick `python -c "import textual_trader"`) silently replaces the global `tqdm` class. If a test imports it inadvertently, all tqdm progress bars in tests become no-ops, hiding real failures.
-
-**Minimal fix:** scope the patch to the app, install + tear-down in `on_mount`/`on_unmount`. Or guard with `if __name__ == "__main__":` block plus a CLI flag.
-**Severity:** **LOW** — debug & test hygiene.
-
----
-
-### L4. `_NoopTqdm.write` references `sys` but it's only imported inside the top-of-file patch block — works by accident
-
-**Where:** `textual_trader.py` lines 8-32.
-
-`write` uses `print(s, file=file or sys.stderr, ...)` — `sys` is imported at module scope, so it works. But the `File "/Users/yuzu/Documents/.../textual_trader.py" line 32, in <module>` ordering: `import sys` happens after the `_NoopTqdm.write` definition. The diamond is fine because the function body is only evaluated on call, and the import is unconditional before the class is instantiated. Still, future refactors could break this.
-
-**Minimal fix:** move `import sys` closer to its first use.
-**Severity:** **LOW** — order-fragility.
-
----
-
-### L5. `cfg.tickers = list(range(val_features.shape[1]))` in `eval_colab` is a stopgap
-
-**Where:** `eval_colab.py` line 60.
-
-Trade-off: works because `n_stocks = len(self.tickers)` and `stock_embed` tolerates `[0, n-1]` integer indices. But it's confusing — readers see `cfg.tickers = [0, 1, 2, ...]` and the real ticker-name support assumes strings.
-
-**Minimal fix:** introduce a `set_n_stocks(cfg, n)` helper that sets the property without polluting `self.tickers`. Or hold a temporary `Config` subclass.
-**Severity:** **LOW** — code-clarity.
+| ID | Item | Status |
+|----|------|--------|
+| **UX23** | Add `Ctrl+P` binding + visible hint in `HelpScreen` | **OPEN** |
+| **UX24** | Right-align numeric columns (Pos, %, Score, P&L) | **OPEN** |
+| **UX25** | Persist `interval`/`buy_t`/`sell_t` to `data/last_session.json` | **OPEN** |
+| **UX26** | Refresh `equity_history` on asset-class switch (currently cross-pollutes) | **OPEN** |
+| **UX27** | Fault-tolerant status bar (already partially done in `_refresh_buttons` — extend to header) | **OPEN** |
+| **UX28** | "Last filled:" divider line in RichLog feed | **OPEN** |
 
 ---
 
-## NITPICK (style / dead code / docs)
+## False positives (closed as noise)
 
-- **N1.** `paper_trader.py` `min(held, trade_sell_qty) if held > trade_sell_qty else held` simplifies to `min(held, trade_sell_qty)`. Verbose but correct.
-- **N2.** `src/features.py` `_data_hash` hashes filename+mtime+size; doesn't hash CSV content. Replacing a CSV with the same content preserves the hash → cache hit on logically different data. Mitigation: include a CRC of first/last 4 KB.
-- **N3.** `tests/test_paper_trader.py` test name `test_cancel_does_not_call_blancket_cancel` has typo "blancket" → "blanket".
-- **N4.** `walk-forward` writes `fold_i_test.npz` but no consumer reads it (only `train.npz`/`val.npz` are loaded). ~15% wasted disk on every walk-forward build.
-- **N5.** `run_threshold_optimization` writes `threshold.txt` non-atomically — if process is killed mid-write, file is empty; next reader parses it as a single empty string and returns `(0.0, 0.0)`. Use `tmp.rename(target)`.
-- **N6.** `src/utils.load_scaler` doesn't validate JSON structure — corrupted file → silent default of `len(mean_) = 0` propagates downstream. Add `assert len(data["mean"]) == n_features_in`.
-- **N7.** `reconcile` checks `BUY and not has_pos` — duplicates a position already held (e.g., BUY signal returns 10 of AAPL when 5 are already held, ending up with 15). Tolerable for momentum-style signal averaging, but worth a code comment noting the intentional "no pyramid" rule.
-- **N8.** `textual_trader._fstring` usages contain Markdown table-row text that ruff's `tab` rule already accepts — using `_from_url` macros instead would shrink 30 lines.
-- **N9.** `cancel_open_orders` passes `filter=GetOrdersRequest(symbols=[symbol])` even when no orders may exist — extra API call per cycle. Could check `len(actionable)` before iterating.
-- **N10.** `mypy` 48 errors are dominated by `import-untyped` for `yfinance`/`unlockedpd`/`sklearn`/`alpaca-py`/`textual`. Add `# mypy: disable-error-code=import-untyped` to `pyproject.toml` to silence the noise floor and surface real signal.
-
----
-
-## FALSE POSITIVES (validated, dropped from plan)
+These were candidates from the original audit that, after a closer read, are *not* real bugs. They are kept here so future audits don't re-litigate them.
 
 | ID | Candidate | Verdict |
-|---|---|---|
-| F1.1 | `math.floor` round-trip fractional shares | Confirmed correct, comment-documented |
-| F1.2 | `compute_features_for_date` uses crypto `BTC/USD` for `market_state` | Not leakage — same as stocks using SPY which is in universe; intentional |
-| F1.3 | DDP scaler rank-local stats | False positive — every rank loads the full npz, `scaler.fit` is identical by construction; the broadcast is redundant but harmless |
-| F1.4 | `textual_trader` exhaustive worker coordination | Mitigated by `name="cycle"` singleton |
-| F1.5 | `cancel_open_orders` blanket-cancel | Currently unreachable (all callers pass concrete ticker); see H4 above for signature tightening |
+|----|-----------|---------|
+| F1.1 | `math.floor` round-trip fractional shares | Confirmed correct (now `N1` resolved too via `min(...)` simplification) |
+| F1.2 | `compute_features_for_date` uses BTC/USD for `market_state` | Not leakage — same pattern as SPY for stocks; intentional |
+| F1.3 | DDP scaler rank-local stats | False positive — same npz on every rank; broadcast block was dead code (now **removed**, see Resolved table) |
+| F1.4 | `textual_trader` worker coordination | Now fully mitigated by `exclusive=True` (see L2 in Resolved) |
+| F1.5 | `cancel_open_orders` blanket-cancel | Signature now requires `symbol` (see H4 in Resolved) |
 
 ---
 
-## UX / UI Improvements (Research-Backed)
+## Resolved by `d87f3b5` (reference only)
 
-> _Background research: Textual widget gallery, K9s/lazygit/helix keyboard conventions, Bloomberg Terminal/TOS/Robinhood table semantics, Alpaca-py streaming patterns. Findings filtered to ones that fit the existing architecture and don't require new tests to validate safety._
+The following items are **closed** by commit `d87f3b5` and no longer need attention. Kept here so that re-auditing the same area doesn't surface them.
 
-### Bucket A — Drop-in Textual Widgets (high impact, low risk, small diff)
-
-| ID | Item | Where | Minimal change | Impact × Risk |
-|----|------|-------|----------------|---------------|
-| **UX1** | Replace manual `_sparkline()` string-builder with the built-in `Sparkline` widget | `textual_trader.py` — drop `_sparkline` method, replace usage in `_refresh_cycle` status | `from textual.widgets import Sparkline; yield Sparkline(id="equity-spark")` and `spark.data = self._equity_history` on each cycle | **H × L** |
-| **UX2** | Use `Digits` for the "Equity" and "Cash" headline numbers — bigger, scan-friendly | `MetricCard` for equity/cash only | Yield `Digits(value)` from a subclass; keep Static for "Day Δ / Positions / Cycle" | **H × L** |
-| **UX3** | Add a `RichLog` panel for trade audit trail (`[HH:MM:SS] BUY 10 AAPL @ $X`) | Below the `DataTable` | `from textual.widgets import RichLog`; in `_update_table`, for every executed trade call `log.write_line(...)` | **H × L** |
-| **UX4** | `ProgressBar` (indeterminate) for "inference running" — replaces `status.update("Cycle #N — running...")` | Top right of metric-row | `pb = ProgressBar(total=None, show_eta=False)`; advance on each sub-step (account / inference / positions / reconcile) | **M × L** |
-| **UX5** | `TabbedContent` for stocks/crypto + threshold tuning tabs (replaces the two `Button`s) | Top asset-row | `with TabbedContent(): with TabPane("Stocks"): ... ; with TabPane("Crypto"): ...; with TabPane("Tuning"): ...` and a `Switch` per tab event | **H × M** |
-| **UX6** | `Collapsible` around the threshold-tuning controls (`[`, `]`, `{`, `}`) so the keys are scoped to it | Tuning tab | Yield a `Collapsible(title="Threshold tuning", collapsed=True)` holding the related widgets | **M × L** |
-| **UX7** | `MarkdownViewer` for an in-app "Strategy Notes" screen — README-style explainer | New screen via `App.SCREENS` | `app.push_screen("notes")`, content is `README.md` rendered | **L × L** |
-
-### Bucket B — Real-Time Feedback / Staleness (no new infrastructure)
-
-| ID | Item | Where | Minimal change | Impact × Risk |
-|----|------|-------|----------------|---------------|
-| **UX8** | Bloomberg-style flash on equity change — animate background green/red 300ms when value goes up/down | `MetricCard.watch_value` | Save previous value; `self.set_class(direction, True)` for 0.3s, then reset with `self.set_timer(0.3, ...)` | **H × L** |
-| **UX9** | "Last refreshed Xm ago" indicator on the right side of the header bar — turns red if interval + grace exceeded | `Header` right slot | Track `self._last_refresh_ts`; render `Static("[dim]5m ago[/]")`; tween to red if stale | **H × L** |
-| **UX10** | Row-level position-size visual: gradient row tint that goes yellow → red as realized position value approaches `trade_max_position_pct` | `_update_table` (per row) | Compute `pos_pct = market_value / equity`; set `row_label = f"{pos_pct*100:.0f}%"` and a CSS class like `pos-warn` / `pos-cap` that backgrounds the row | **H × L** |
-| **UX11** | Color-blind-safe pairings: P&L column uses `▲`/`▼` alongside red/green | `_update_table` (P&L formatting) | If `pl > 0`: `[green]▲ +$X[/]`; if `< 0`: `[red]▼ -$X[/]`; unchanged for `0` | **H × L** |
-| **UX12** | Tooltips on the metric cards + main buttons | `MetricCard.__init__` + on-mount of `TradingApp` | `self.tooltip = "Account equity (mark-to-market)"`; on Buttons: `tooltip = "Switch to {asset_class}"` | **M × L** |
-| **UX13** | De-duplicated error toasts (`self.notify`) | `_refresh_cycle` error branch | Track last error message + count; on repeat show `[red]Connection error (x5)[/]` rather than spamming | **M × L** |
-| **UX14** | Hotkey hint footer bar — `lazygit`-style: status bar shows "tab: switch • q: quit • +: interval • [/]: buy threshold" | Replace or augment `Footer()` | Bind `F1` / `?` to `action_show_help` (already h); also add a `Static("#bottom-hint")` row above existing footer | **M × L** |
-
-### Bucket C — Confirmation / Safety UX
-
-| ID | Item | Where | Minimal change | Impact × Risk |
-|----|------|-------|----------------|---------------|
-| **UX15** | Liquidate-all confirmation modal: `L` opens a `ModalScreen` listing current positions, requires explicit `Y` then `Enter` to flatten | New `LiquidateModal` class + binding `("L", "liquidate", "Liquidate")` | Modal lists positions and unread-key ticks; `Y` + Enter triggers `self.app.cancel_all_and_flatten()` | **H × M** |
-| **UX16** | Threshold-bound arrow-key confirmation: when `]` raises buy-threshold past 0.95, ask "Are you sure?" | `action_threshold_up` | Inject `if self._buy_t == 0.99: self.push_screen(ConfirmModal(...))` and only commit on confirmation | **M × M** |
-| **UX17** | Disconnect-strike indicator on the market-dot when 3 consecutive cycle errors hit | `_refresh_cycle` error branch | Increment `self._err_strikes`; update dot to `[red]● Disconnected[/]` if >= 3, reset on success | **H × L** |
-
-### Bucket D — Architectural (Bigger Work — Separate Roadmap)
-
-> _These need new test scaffolding, refactoring the data flow, or new dependencies. Listed so they're not lost, but kept out of "Recommended order"._
-
-| ID | Item | Effort | Notes |
-|----|------|--------|-------|
-| **UX18** | **Alpaca WebSocket**: replace 15-minute REST poll cycle with `TradingStream.subscribe_trade_updates` for instant fill events | 2-3 days | Requires async refactor of the reconcile loop, save-as-state on the order lifecycle (`new → filled / partial_fill / rejected`), and live updates to RichLog + table |
-| **UX19** | **Live market data stream**: `StockDataStream` for active position symbols so P&L ticks between inference cycles | 1-2 days | Decoupled from inference; affects existing `_update_metrics` timing |
-| **UX20** | **Multi-screen app stack**: `Dashboard` / `Strategy Tuning` / `Logs` / `Backtest` / `Notes` screens, nav via Tab/S-Tab | 1 day | Composes existing widgets; main architectural decision is `App.SCREENS` map |
-| **UX21** | **User-configurable column set**: DataTable columns toggleable, sortable, saveable to `~/.tradingbot/layout.json` | 1 day | Needs `ListView` settings panel + persistence |
-| **UX22** | **Strategy inspector**: before submitting trades, render side-by-side "Model output vs consensus (top-1 chg% from yfinance)" | 0.5 day | Read-only; useful for trust calibration |
-
-### Bucket E — Quick Misc (≤5 lines each)
-
-- **UX23.** Add `Ctrl+P` binding as a visible hint in `HelpScreen` (Textual's default palette key; users expect it)
-- **UX24.** Numeric column alignment: ensure all numeric columns are right-aligned with fixed widths (look at `_update_table` columns `"Pos"`, `"%"`, `"Score"`, `"P&L"`)
-- **UX25.** Persist user-set `interval`/`buy_t`/`sell_t` to a `data/last_session.json` so relaunch starts where the user left off
-- **UX26.** On `--crypto-pairs top10 → all17` switch in UI, also refresh `equity_history` (currently grows across asset-class switches — stale stocks `$` values displayed under crypto)
-- **UX27.** Status bar fault-tolerant: if `next_open()` raises unexpectedly (e.g. network blip), show `[yellow]● Open•?[/]` rather than crashing the cycle (currently `except Exception: ... [yellow]● ?[/]` already present in `_refresh_buttons` — apply consistent treatment to status bar)
-- **UX28.** Add divider "Last filled:" line to RichLog feed — clearer audit granularity
+| ID | Title | Where | Resolution |
+|----|-------|-------|------------|
+| **C1** | `_fold_metadata()` fingerprint missing tickers/asset_class | `main.py` | Added `asset_class`, `crypto_pairs`, `n_stocks` to fingerprint |
+| **H1** | `time.sleep` negative clamp | `main.py`, `trade.py` | Wrapped as `max(0.0, min(wait, …))` |
+| **H2** | Crypto feature cache overwrites stock cache | `src/features.py` | `cache_dir` parameter threaded through `save_cached_features` / `load_cached_features` |
+| **H3** | `BUY` falls through when `ask=None` | `src/paper_trader.py` | Refuses trade, appends `(ticker, 0, "NO_ASK")`; test updated |
+| **H4** | `cancel_open_orders(symbol=None)` blanket-cancel footgun | `src/paper_trader.py` | Signature tightened to `symbol: str`; dead branch dropped |
+| **M1** | Threshold scan O(N²) on large universes | `training/threshold.py` | Grid spacing coarsened to 0.05 |
+| **M2** | DDP scaler comment wrong + broadcast redundant | `training/train.py` | Broadcast block removed; comment now correct |
+| **M3** | `_raw_data_cache` unbounded | `src/inference.py` | Cache cleared when `len > 1` (today-only) |
+| **L1** | `eval_colab` hardcoded `cuda/cpu`, no MPS | `eval_colab.py` | Uses `get_device()` from config |
+| **L2** | `textual_trader` workers not exclusive | `textual_trader.py` | `run_worker(..., name="cycle", exclusive=True)` |
+| **N1** | `min(held, sell_qty) if held > sell_qty else held` verbose | `src/paper_trader.py` | Simplified to `min(held, sell_qty)` |
+| **N3** | test name typo "blancket" | `tests/test_paper_trader.py` | Test renamed to `test_cancel_requires_symbol` |
+| **N5** | `threshold.txt` non-atomic write | `training/threshold.py` | `tmp.rename(target)` atomic pattern |
+| **N6** | `load_scaler` no JSON-structure validation | `src/utils.py` | `assert len(data["mean"]) > 0` |
+| **N9** | `cancel_open_orders` extra API call when no orders | `src/paper_trader.py` | Single-symbol query path; dead branch dropped |
+| **N10** | mypy noise floor from `import-untyped` | `pyproject.toml` | `disable_error_code = ["import-untyped"]` added |
 
 ---
 
-## Combining bucket-by-bucket
+## Recommended order (remaining open items)
 
-### Bug fixes (out-of-band, P0 quality bar)
+### Bug-fix PR (P0 quality bar, ~½ day)
 
-1. **C1** (fingerprint) — 5-line change, highest payoff.
-2. **H1** (`time.sleep` clamp) — 1-line, fires deterministically.
-3. **H3** (BUY-without-cap on `ask=None`) — invert fallback + 1 test update.
-4. **H4** (cancel_open_orders signature) — tightens public surface.
-5. **H2** (per-asset-class feature cache) — refactor, ~30-minute item.
-6. **M1, M2, M3** — quality-of-life.
-7. **L1-L5** — drive-by cleanups in the same commit or follow-up.
-8. **N1-N10** — opportunistic, pick during PR review.
+1. **M2** (C2) pretrain DDP guard — 3 lines, but factor `wrap_ddp()` helper for symmetry.
+2. **L5** `cfg.tickers = list(range(N))` stopgap — `set_n_stocks()` helper.
+3. **L3** tqdm global monkey-patch — scope to App lifecycle.
+4. **L4** `_NoopTqdm.write` sys import order — move `import sys` to top.
+5. **N2** `_data_hash` adds CRC — ~10 lines, defensive.
+6. **N4** drop unused `fold_i_test.npz` save — 1-line.
+7. **N7 / N8** commentary + macro cleanup — drive-by in the same PR.
 
 ### UI workstream (separate PRs)
 
-- **PR-UX1**: Buckets A + UX8 + UX9 + UX11 — drop-in widgets + flash + staleness + a11y arrows. Smallest review surface, immediate visual payoff. ~1 day.
-- **PR-UX2**: UX15 (Liquidate-modal) + UX16 (threshold confirmation) + UX10 (row coloring) — safety + risk-visualization. ~0.5 day.
-- **PR-UX3**: UX14 (hotkey footer) + UX12 (tooltips) + UX23-UX27 (misc a11y/persistence). ~0.5 day.
-- **PR-UX4 (architecture)**: UX18 + UX19 — WebSocket migration only after buckets 1-3 ship and land. ~1 week.
-- **PR-UX5 (future)**: UX20-UX22 — multi-screen app.
+| PR | Items | Wall time |
+|----|-------|-----------|
+| **PR-UX1** | UX1, UX2, UX3, UX4 — drop-in Textual widgets + RichLog + Digits | ~1 day |
+| **PR-UX2** | UX5, UX6, UX8, UX9 — tabs/collapsible/flash/staleness | ~0.5 day |
+| **PR-UX3** | UX10, UX11, UX15, UX16, UX17 — risk-visualization + safety confirmations | ~0.5 day |
+| **PR-UX4** | UX12, UX13, UX14, UX23-UX28 — a11y/persistence/footer hints | ~0.5 day |
+| **PR-UX5** (architecture) | UX18, UX19 — WebSocket migration | ~1 week |
+| **PR-UX6** (future) | UX20, UX21, UX22 — multi-screen app + config + inspector | ~2 days |
 
 ---
 
-## Citations & references
+## Reference URLs (preserved from prior audit)
 
-**Textual widgets and conventions**
-- Textual docs: <https://textual.textualize.io/widget_gallery/> (DataTable, Sparkline, Digits, TabbedContent, RichLog, Collapsible, ProgressBar)
-- Textual reactivity & watch methods: <https://textual.textualize.io/guide/reactivity/>
-- Textual Worker / concurrency: <https://textual.textualize.io/guide/workers/>
-- ModalScreen & Screen stacking: <https://textual.textualize.io/guide/screens/>
-
-**Trading-platform UX conventions**
-- Bloomberg Terminal / ThinkOrSwim: dense tabular data, color semantics (green gain / red loss), fixed-width numeric alignment
-- Robinhood / Public: clean order ticket, transparent Daily P&L
-- QuantConnect: integrated Backtest / Live Logs / Equity chart paneling
-
-**TUI keyboard-first patterns**
-- K9s (gold standard for context-sensitive `?` help + Tab/Enter confirm): <https://github.com/derailed/k9s>
-- Lazygit (exemplar of TUI menu / sub-command navigation): <https://github.com/jesseduffield/lazygit>
-- Helix (modal key-mapping, selection-based ops): <https://helix-editor.com/>
+- Textual widget gallery: <https://textual.textualize.io/widget_gallery/>
+- Textual reactivity / workers / screens: <https://textual.textualize.io/guide/reactivity/> · <https://textual.textualize.io/guide/workers/> · <https://textual.textualize.io/guide/screens/>
+- K9s (TUI keyboard conventions): <https://github.com/derailed/k9s>
+- Lazygit (TUI menu patterns): <https://github.com/jesseduffield/lazygit>
+- Helix (modal key-mappings): <https://helix-editor.com/>
+- Alpaca WebSocket streaming docs: <https://docs.alpaca.markets/us/docs/websocket-streaming>
+- Alpaca MCP server: <https://github.com/alpacahq/alpaca-mcp-server>
 - Lollypop Design — Trading App Design Guide 2026: <https://lollypop.design/blog/2026/june/trading-app-design/>
-
-**Alpaca community UI references**
-- Streamlit Alpaca dashboard (canonical pattern): <https://levelup.gitconnected.com/a-streamlit-dashboard-for-the-alpaca-api-algo-trading-platform-9a7194aa7844>
-- Alpaca WebSocket streaming: <https://docs.alpaca.markets/us/docs/websocket-streaming>
-- Alpaca-py `TradeStream` / `StockDataStream` for fills + market data
-- Alpaca MCP server (AI-driven control plane): <https://github.com/alpacahq/alpaca-mcp-server>
-- Third-party Alpaca UIs on GitHub:
-  - <https://github.com/CruddyShad0w/Alpaca-Trading-Analytics-Dashboard>
-  - <https://github.com/huygiatrng/AlpacaTradingAgent>
-  - <https://github.com/lacymorrow/openclaw-alpaca-trading-skill>
