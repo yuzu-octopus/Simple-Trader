@@ -48,7 +48,7 @@ body = "Causal masking across stocks — each stock attends to itself and preced
 
 [[sections.items]]
 title = "Multi-Window Features"
-body = "30 technical indicators (SMA, RSI, MACD, Bollinger, volatility, returns, drawdown) computed per-window at 1y, 1m, 1w, 1d lookbacks — 120 features per stock per day."
+body = "30 technical indicators (SMA, RSI, MACD, Bollinger, volatility, returns, drawdown) at 1y, 1m, 1w, 1d lookbacks — 120 features per stock per day. Crypto pipeline uses BTC/USD as market proxy."
 
 [[sections.items]]
 title = "Portfolio-Aware Training"
@@ -88,6 +88,45 @@ cells = ["--force-features", "off", "Rebuild feature matrix from scratch"]
 
 [[sections.rows]]
 cells = ["--model <path>", "—", "Load model from data/models/<path>/best.pt"]
+
+[[sections.rows]]
+cells = ["--trade-interval", "15", "Minutes between trading cycles"]
+
+[[sections.rows]]
+cells = ["--trade-headless", "off", "Run paper trading without Rich display"]
+
+[[sections.rows]]
+cells = ["--trade-buy-qty", "10", "Shares to buy per long signal"]
+
+[[sections.rows]]
+cells = ["--trade-sell-qty", "10", "Shares to sell per short signal"]
+
+[[sections.rows]]
+cells = ["--buy-threshold", "—", "Override buy threshold"]
+
+[[sections.rows]]
+cells = ["--sell-threshold", "—", "Override sell threshold"]
+
+[[sections.rows]]
+cells = ["--pretrain", "off", "Initialize training from pre-trained weights"]
+
+[[sections.rows]]
+cells = ["--colab-template", "off", "Generate self-contained Colab script"]
+
+[[sections.rows]]
+cells = ["--show-script", "off", "Print colab script to terminal"]
+
+[[sections.rows]]
+cells = ["--asset-class", "stocks", "stocks or crypto — switches pipeline"]
+
+[[sections.rows]]
+cells = ["--crypto-pairs", "top10", "top10 or all17 — crypto universe"]
+
+[[sections.rows]]
+cells = ["--no-amp", "off", "Disable mixed-precision training"]
+
+[[sections.rows]]
+cells = ["--tickers-file", "—", "File with one ticker per line"]
 
 [[sections]]
 id = "architecture"
@@ -153,7 +192,7 @@ body = "Supervised regression on next-day cross-sectional z-score returns. Suppo
 
 [[sections.items]]
 title = "5. Threshold"
-body = "Post-training calibration via isotonic regression. Dual-threshold search maximizes Sharpe ratio — not just return. Produces separate buy and sell thresholds."
+body = "Post-training calibration via dual-threshold search maximizes Sharpe ratio. Separate buy and sell thresholds. Paper trading loop runs via trade.py (Rich) or textual_trader.py (TUI)."
 
 [[sections]]
 id = "terms"
@@ -216,6 +255,18 @@ uv run python main.py --mode train --walk-forward
 
 # 6. Get today's trading signals
 uv run python main.py --mode infer
+
+# 7. Paper trading (Rich dashboard)
+uv run python trade.py --interval 15
+
+# 8. Paper trading (Textual TUI)
+uv run python textual_trader.py --interval 15
+
+# 9. Crypto mode
+uv run python trade.py --interval 15 --asset-class crypto
+
+# 10. Multi-GPU training
+torchrun --nproc_per_node=N uv run python main.py --mode train
 """
 
 [[sections]]
