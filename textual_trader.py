@@ -270,11 +270,13 @@ class TradingApp(App):
         self._nyc = ZoneInfo("America/New_York")
         self._cycle = 0
         self._equity_history: list[float] = []
+        self._timer: object | None = None
         self._err_strikes = 0
         self._last_error: str | None = None
         self._error_count = 0
         self._last_session_path = Path("data/last_session.json")
         self._load_session()
+        self._timer: object | None = None
         self._asset_class = config.asset_class
 
     def compose(self) -> ComposeResult:
@@ -516,14 +518,16 @@ class TradingApp(App):
 
     def action_interval_up(self) -> None:
         self._interval = min(3600, self._interval + 60)
-        self._timer.stop()
+        if self._timer is not None:
+            self._timer.stop()
         self._timer = self.set_interval(self._interval, self._on_timer)
         self._save_session()
         self.notify(f"Interval: {self._interval // 60}m", severity="information")
 
     def action_interval_down(self) -> None:
         self._interval = max(60, self._interval - 60)
-        self._timer.stop()
+        if self._timer is not None:
+            self._timer.stop()
         self._timer = self.set_interval(self._interval, self._on_timer)
         self._save_session()
         self.notify(f"Interval: {self._interval // 60}m", severity="information")

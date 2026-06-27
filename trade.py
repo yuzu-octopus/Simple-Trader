@@ -83,7 +83,7 @@ def make_trade_table(
         pos = positions.get(ticker)
         t = trade_map.get(ticker)
 
-        pos_str = f"{round(pos['qty'])}" if pos else "\u2014"
+        pos_str = f"{math.floor(abs(pos['qty']))}" if pos else "—"
         alloc = (
             f"{pos['market_value'] / equity * 100:.1f}" if pos and equity > 0 else ""
         )
