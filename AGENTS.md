@@ -37,7 +37,8 @@ uv run pytest                   # Tests
   chained operations trip `pandas-stubs` overload rules that are not
   runtime-relevant.
 - Missing imports are ignored for `src.data_pipeline`, `src.utils`,
-  `src.paper_trader`, `trade.py`, `main.py`, `training.train`, and
+  `src.paper_trader`, `src.crypto_pipeline`, `src.inference`,
+  `trade.py`, `main.py`, `training.train`, and
   `training.threshold` (sklearn, yfinance, alpaca-py don't ship stubs).
 
 

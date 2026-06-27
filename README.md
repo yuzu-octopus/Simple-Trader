@@ -11,17 +11,19 @@ Multi-stock ML trading bot. Learns inter-stock relationships — all stocks pass
 ## Quick start
 
 ```bash
-uv sync
-uv run python main.py --mode train
+uv sync                         # Create venv + install all deps
+uv run python main.py --mode train      # First run: fetches data, builds features, trains model
 ```
 
-First run fetches ~10 years of data for all stocks, builds features, trains the model, and optimizes buy/sell thresholds.
+First run fetches ~10 years of OHLCV data for all S&P 500 stocks, computes window features (1y/1m/1w/1d lookbacks), trains the Transformer model, and optimizes buy/sell thresholds.
+
+Python 3.14 via `.python-version`. uv manages everything — no manual `.venv/bin/activate`.
 
 ## Usage
 
 ```bash
 uv run python main.py --mode train                          # Train with MSE loss
-uv run python main.py --mode train --loss msrr              # Direct Sharpe optimization
+uv run python main.py --mode train --loss msrr              # Portfolio MSE loss
 uv run python main.py --mode train --seeds 5 --grad-accum 4 # Ensemble + gradient accumulation
 uv run python main.py --mode train --walk-forward           # Walk-forward validation
 uv run python main.py --mode train --resume                 # Resume from checkpoint
@@ -29,7 +31,10 @@ uv run python main.py --mode infer                          # Get today's tradin
 uv run python main.py --mode infer --model colab/run1       # Evaluate a Colab-trained model
 uv run python main.py --mode trade --trade-interval 15      # Alpaca paper trading loop
 uv run python trade.py --interval 15                        # Standalone paper trading (Rich display)
+uv run python textual_trader.py --interval 15               # Textual TUI paper trading dashboard
 uv run python main.py --mode pretrain                       # Self-supervised pre-training
+uv run python main.py --mode train --asset-class crypto     # Train on crypto pairs (BTC, ETH, etc.)
+uv run python trade.py --interval 15 --asset-class crypto   # Crypto paper trading
 torchrun --nproc_per_node=N uv run python main.py --mode train  # Multi-GPU (DDP)
 uv run python main.py --colab-template --loss msrr --seeds 3 --grad-accum 4  # Generate Colab/Kaggle script
 ```
@@ -54,6 +59,11 @@ uv run python main.py --colab-template --loss msrr --seeds 3 --grad-accum 4  # G
 | `--sell-threshold` | — | Override sell threshold |
 | `--pretrain` | off | Initialize training from pre-trained weights |
 | `--colab-template` | off | Generate self-contained Colab script |
+| `--show-script` | off | Print colab script to terminal |
+| `--asset-class` | `stocks` | `stocks` or `crypto` — switches data pipeline and model |
+| `--crypto-pairs` | `top10` | `top10` or `all17` — crypto universe size |
+| `--no-amp` | off | Disable mixed-precision training |
+| `--tickers-file` | — | File with one ticker per line (overrides default) |
 
 ## Remote Training (Colab / Kaggle)
 
@@ -194,14 +204,15 @@ The trading loop: run inference on the latest cached business day → get BUY/SE
 
 Each cycle, `PaperTrader.reconcile()` does the following:
 
-1. **Cancel scope:** only cancels *open orders for tickers in the current signal set* — never blanket-cancels. Avoids duplicating in-flight fills and respects Alpaca's rate-limit guard.
-2. **Quote fetch:** for every fresh BUY ticker, fetches a latest ask quote. Effort is skipped entirely if no new buys are needed.
-3. **Position cap:** `qty * ask_price` is compared against `equity * trade_max_position_pct` (default 2%). Trades that would breach the cap are skipped with a `MAX_POS_CAP` entry; trades with no usable ask are skipped with a warning log.
-4. **No-equity guard:** if `account.equity <= 0`, all BUYs are blocked with `NO_EQUITY`.
-5. **Partial close:** SELL sells `min(held, trade_sell_qty)` — for a 1000-share position with `trade_sell_qty=20`, only 20 are sold. Smaller positions close fully.
-   Note: the position cap (#3) is checked on **each new entry** independently, not on cumulative exposure. After a SELL closes a position, a later BUY on the same ticker is treated as a fresh entry. If you want cumulative caps, lower `trade_buy_qty` or raise `trade_max_position_pct`'s threshold accordingly.
-6. **Fractional shares:** positions held as fractional shares (e.g. `-3.7` short) are rounded, never truncated, so no dust-share drift.
-7. **Failure capture:** any rejected order is logged as `<action>_FAIL:<exception>` in the trades list instead of crashing the cycle.
+1. **Bulk cancel:** calls `cancel_orders()` to clear ALL open open orders — a single API call per cycle instead of per-ticker. Cancelling stale HOLD-ticker orders is harmless; they won't be re-filled since reconcile only acts on BUY/SELL signals.
+2. **Quote fetch:** for every fresh BUY ticker, fetches a latest ask quote. Skipped entirely if no new buys are needed.
+3. **Portfolio cap:** if total existing position market value exceeds `equity * max_portfolio_pct` (default 50%), new BUYs are blocked with `PORTFOLIO_CAP`.
+4. **Position cap:** `qty * ask_price` compared against `equity * trade_max_position_pct` (default 2%). Trades breaching the cap are skipped with `MAX_POS_CAP`; trades with no usable ask get `NO_ASK`.
+5. **No-equity guard:** if `account.equity <= 0`, all BUYs blocked with `NO_EQUITY`.
+6. **Partial close:** SELL sells `min(held, trade_sell_qty)` — for a 1000-share position with `trade_sell_qty=20`, only 20 are sold. Smaller positions close fully.
+7. **Fractional shares:** `math.floor(abs(pos["qty"]))` for sell qty — prevents over-selling fractional positions. `round()` could flip a short into a long (e.g. covering 3.9 of a -4 short with round(3.9) = 4 leaves a spurious +0.1 long).
+8. **Trade audit:** every trade is appended to `data/paper_trades.csvl` via `PaperTrader._audit()` — survives crashes, shared by all callers.
+9. **Failure capture:** any rejected order is logged as `<action>_FAIL:<exception>` instead of crashing the cycle.
 
 ### Walk-Forward Validation
 
