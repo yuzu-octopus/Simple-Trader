@@ -1,18 +1,47 @@
 """Textual TUI for paper trading --- stocks and crypto."""
-# ruff: noqa: E402
 
+import asyncio
 import logging
 import math
 import os
 import sys
+import time
+from argparse import ArgumentParser
+from datetime import datetime
+from functools import partial
+from pathlib import Path
+from typing import ClassVar
+from zoneinfo import ZoneInfo
+
+import tqdm.std as _tqdm_std
+from textual.app import App, ComposeResult
+from textual.command import Hit, Hits, Provider
+from textual.containers import Horizontal, Vertical
+from textual.reactive import reactive
+from textual.screen import ModalScreen
+from textual.widgets import (
+    Collapsible,
+    DataTable,
+    Digits,
+    Footer,
+    Header,
+    Input,
+    Label,
+    MarkdownViewer,
+    ProgressBar,
+    RichLog,
+    Sparkline,
+    Static,
+    Tab,
+    TabbedContent,
+)
+
+from config import Config, get_sp500_tickers
+from src.inference import run_inference
+from src.paper_trader import PaperTrader
+from src.utils import load_threshold
 
 logger = logging.getLogger(__name__)
-
-# Monkey-patch tqdm BEFORE any import touches it.
-# tqdm.__new__ creates a multiprocessing RLock that triggers the resource
-# tracker, which calls stderr.fileno(). Textual returns -1, causing
-# "bad value in fds_to_keep" on Python 3.14.
-import tqdm.std as _tqdm_std
 
 
 class _NoopTqdm:
@@ -44,36 +73,7 @@ class _NoopTqdm:
         print(s, file=file or sys.stderr, end=end)
 
 
-_tqdm_std.tqdm = _NoopTqdm
-
-
-import asyncio
-from argparse import ArgumentParser
-from datetime import datetime
-from functools import partial
-from pathlib import Path
-from typing import ClassVar
-from zoneinfo import ZoneInfo
-
-from textual.app import App, ComposeResult
-from textual.command import Hit, Hits, Provider
-from textual.containers import Horizontal
-from textual.reactive import reactive
-from textual.screen import ModalScreen
-from textual.widgets import (
-    Button,
-    DataTable,
-    Footer,
-    Header,
-    RichLog,
-    Sparkline,
-    Static,
-)
-
-from config import Config, get_sp500_tickers
-from src.inference import run_inference
-from src.paper_trader import PaperTrader
-from src.utils import load_threshold
+_ORIGINAL_TQDM = _tqdm_std.tqdm
 
 
 class HelpScreen(ModalScreen[None]):
@@ -182,6 +182,76 @@ def _load_dotenv() -> None:
                 os.environ[key] = val
 
 
+class ThresholdConfirm(ModalScreen[bool]):
+    """Confirmation dialog for aggressive threshold values."""
+
+    CSS = """
+    ThresholdConfirm {
+        align: center middle;
+    }
+    #threshold-dialog {
+        width: 40;
+        height: auto;
+        padding: 2;
+        background: $surface;
+        border: thick $warning;
+    }
+    #threshold-dialog Label {
+        margin-bottom: 1;
+    }
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="threshold-dialog"):
+            yield Label("[bold yellow]Confirm Aggressive Threshold[/]")
+            yield Label(self._message)
+            yield Label("Press [bold]Y[/] to confirm, any other key to cancel.")
+
+    def on_key(self, event) -> None:
+        if event.key.lower() == "y":
+            self.dismiss(result=True)
+        elif event.key in ("escape", "n", "q"):
+            self.dismiss(result=False)
+
+
+class LiquidateConfirm(ModalScreen[bool]):
+    """Modal to confirm liquidation of all positions."""
+
+    CSS = """
+    LiquidateConfirm {
+        align: center middle;
+    }
+    #liquidate-dialog {
+        width: 40;
+        height: auto;
+        padding: 2;
+        background: $surface;
+        border: thick $error;
+    }
+    #liquidate-dialog Label {
+        margin-bottom: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="liquidate-dialog"):
+            yield Label("[bold red]Liquidate ALL Positions?[/]")
+            yield Label("This will close all open positions and cancel all orders.")
+            yield Label("Type [bold]YES[/] to confirm:")
+            yield Input(placeholder="YES", id="liquidate-input")
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.value.strip().upper() == "YES":
+            self.dismiss(result=True)
+        else:
+            self.query_one("#liquidate-input", Input).value = ""
+            self.notify("Type YES to confirm", severity="warning")
+
+
 class TradingApp(App):
     COMMANDS = App.COMMANDS | {TradingCommands}
 
@@ -200,17 +270,12 @@ class TradingApp(App):
         color: $text;
         padding: 0 1;
     }
-    Button {
-        width: 16;
-        margin: 0 1;
+    TabbedContent {
+        width: 1fr;
+        height: auto;
     }
-    Button.-active {
-        background: $success;
-        color: $text;
-    }
-    Button.-inactive {
-        background: $surface;
-        color: $text-muted;
+    TabbedContent > Tab {
+        padding: 0 2;
     }
     #market-dot {
         width: 3;
@@ -221,16 +286,57 @@ class TradingApp(App):
         padding: 0 1;
         background: $surface;
     }
+    #equity-digits {
+        width: 1fr;
+        height: 3;
+        content-align: center middle;
+        color: $text;
+    }
+    .equity-digits {
+        width: 1fr;
+        height: 3;
+    }
+    #inference-progress {
+        height: 1;
+        margin: 0 1;
+        display: none;
+    }
+    #inference-progress.-visible {
+        display: block;
+    }
     MetricCard {
         width: 1fr;
         content-align: center middle;
         color: $text;
     }
+    #model-status {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+        background: $surface;
+    }
     DataTable { height: 1fr; }
+    #signals .datatable--header:nth-child(2),
+    #signals .datatable--header:nth-child(3),
+    #signals .datatable--header:nth-child(4),
+    #signals .datatable--header:nth-child(6),
+    #signals .datatable--cell:nth-child(2),
+    #signals .datatable--cell:nth-child(3),
+    #signals .datatable--cell:nth-child(4),
+    #signals .datatable--cell:nth-child(6) {
+        text-align: right;
+    }
+    #strategy-notes {
+        height: 8;
+        margin: 0 1;
+    }
     RichLog { height: 6; margin: 0 1; }
     Sparkline { height: 1; }
     .flash-up { background: $success 20%; }
     .flash-down { background: $error 20%; }
+    #threshold-panel {
+        padding: 0 1;
+    }
     #status-bar {
         height: 1;
         padding: 0 1;
@@ -249,6 +355,7 @@ class TradingApp(App):
         ("]", "threshold_up", "Buy\u2191"),
         ("{", "sell_threshold_down", "Sell\u2193"),
         ("}", "sell_threshold_up", "Sell\u2191"),
+        ("l", "liquidate", "Liquidate"),
         ("c", "search_themes", "Theme"),
         ("h", "show_help", "Help"),
         ("q", "quit", "Quit"),
@@ -275,6 +382,7 @@ class TradingApp(App):
         self._err_strikes = 0
         self._last_error: str | None = None
         self._error_count = 0
+        self._last_refresh: float | None = None
         self._last_session_path = Path("data/last_session.json")
         self._load_session()
         self._asset_class = config.asset_class
@@ -284,21 +392,43 @@ class TradingApp(App):
         with Horizontal(id="asset-row"):
             yield Static("", id="market-dot")
             yield Static("Trading:", id="asset-label")
-            yield Button("S&P 500", id="btn-stocks", variant="primary")
-            yield Button("Crypto", id="btn-crypto", variant="primary")
+            with TabbedContent(initial="stocks", id="asset-tabs"):
+                yield Tab("S&P 500", id="stocks")
+                yield Tab("Crypto", id="crypto")
         with Horizontal(id="metric-row"):
-            yield MetricCard("Equity")
+            yield Digits(id="equity-digits", classes="equity-digits")
             yield MetricCard("Cash")
             yield MetricCard("Day Δ")
             yield MetricCard("Positions")
             yield MetricCard("Cycle")
+        yield ProgressBar(id="inference-progress")
+        yield Static(id="model-status")
+        with Collapsible(title="Threshold Tuning", id="threshold-panel"):
+            yield Static(
+                f"Buy: {self._buy_t:.2f}  Sell: {self._sell_t:.2f}",
+                id="threshold-info",
+            )
         yield DataTable(id="signals")
+        yield MarkdownViewer(
+            "# Strategy Notes\n\n"
+            "This bot uses a StockTransformer model with RankGLU output heads.\n"
+            "Market-guided gating via SPY state rescales features each day.\n\n"
+            "Create `data/strategy_notes.md` to customize this description.",
+            id="strategy-notes",
+            show_table_of_contents=False,
+        )
         yield Sparkline(id="equity-spark")
         yield RichLog(id="trade-log", highlight=True, max_lines=10)
         yield Static("Ready", id="status-bar")
         yield Footer()
 
     def on_mount(self) -> None:
+        _tqdm_std.tqdm = _NoopTqdm
+        model_name = Path(self._config.model_save_path).name
+        self.query_one("#model-status", Static).update(f"Model: {model_name}")
+        self.query_one("#threshold-info", Static).update(
+            f"Buy: {self._buy_t:.2f}  Sell: {self._sell_t:.2f}"
+        )
         table = self.query_one("#signals", DataTable)
         table.add_columns("Sym", "Pos", "%", "Score", "Trade", "P&L")
         table.cursor_type = "row"
@@ -307,12 +437,13 @@ class TradingApp(App):
         self.run_worker(self._refresh_cycle(), name="cycle", exclusive=True)
         self._timer = self.set_interval(self._interval, self._on_timer)
 
+    def on_unmount(self) -> None:
+        _tqdm_std.tqdm = _ORIGINAL_TQDM
+
     def _refresh_buttons(self) -> None:
         is_crypto = self._asset_class == "crypto"
-        self.query_one("#btn-stocks", Button).classes = (
-            "" if not is_crypto else "inactive"
-        )
-        self.query_one("#btn-crypto", Button).classes = "" if is_crypto else "inactive"
+        tabs = self.query_one("#asset-tabs", TabbedContent)
+        tabs.active = "crypto" if is_crypto else "stocks"
         dot = self.query_one("#market-dot", Static)
         if is_crypto:
             dot.update("[green]\u25cf[/] Crypto 24/7")
@@ -323,12 +454,36 @@ class TradingApp(App):
                     f"[{'green' if is_open else 'red'}]●[/] {'Open' if is_open else 'Closed'}"
                 )
             except Exception:
-                dot.update("[yellow]\u25cf[/] ?")
+                dot.update("[yellow]\u25cf[/] ??")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-stocks" and self._asset_class != "stocks":
+    def _preview_threshold(self) -> None:
+        """Run a quick inference preview and toast BUY/SELL/HOLD counts."""
+        self.run_worker(self._preview_threshold_async(), exclusive=False)
+
+    async def _preview_threshold_async(self) -> None:
+        try:
+            sigs = await self._run_in_thread(
+                run_inference,
+                self._config,
+                buy_threshold=self._buy_t,
+                sell_threshold=self._sell_t,
+            )
+            buys = sum(1 for s in sigs.values() if s["signal"] == "BUY")
+            sells = sum(1 for s in sigs.values() if s["signal"] == "SELL")
+            holds = sum(1 for s in sigs.values() if s["signal"] == "HOLD")
+            self.notify(
+                f"BUY: {buys}  SELL: {sells}  HOLD: {holds}",
+                severity="information",
+                timeout=3,
+            )
+        except Exception as e:
+            logger.debug("Preview failed: %s", e)
+
+    def on_tab_changed(self, event: TabbedContent.TabActivated) -> None:
+        tab_id = event.tab.id
+        if tab_id == "stocks" and self._asset_class != "stocks":
             self._switch_asset("stocks")
-        elif event.button.id == "btn-crypto" and self._asset_class != "crypto":
+        elif tab_id == "crypto" and self._asset_class != "crypto":
             self._switch_asset("crypto")
 
     def _switch_asset(self, target: str) -> None:
@@ -351,7 +506,7 @@ class TradingApp(App):
         self._prev_equity = 0.0
         self.query_one("#equity-spark", Sparkline).data = []
         self._refresh_buttons()
-        self.notify(f"Switched to {target}", severity="information")
+        self.notify(f"Switched to {target}", severity="information", timeout=2)
         self.run_worker(self._refresh_cycle(), name="switch", exclusive=True)
 
     async def _on_timer(self) -> None:
@@ -360,7 +515,10 @@ class TradingApp(App):
     async def _refresh_cycle(self) -> None:
         table = self.query_one("#signals", DataTable)
         status = self.query_one("#status-bar", Static)
+        progress = self.query_one("#inference-progress", ProgressBar)
         self._cycle += 1
+        progress.display = True
+        progress.update(total=100, progress=0)
         status.update(f"Cycle #{self._cycle} — running inference...")
 
         try:
@@ -371,6 +529,7 @@ class TradingApp(App):
                     - datetime.now(self._nyc).replace(tzinfo=None)
                 ).total_seconds()
                 status.update(f"Market closed — next open ~{max(1, int(wait / 60))}m")
+                progress.display = False
                 self._refresh_buttons()
                 return
 
@@ -379,12 +538,14 @@ class TradingApp(App):
             if len(self._equity_history) > 100:
                 self._equity_history.pop(0)
 
+            progress.update(total=100, progress=30)
             signals = await self._run_in_thread(
                 run_inference,
                 self._config,
                 buy_threshold=self._buy_t,
                 sell_threshold=self._sell_t,
             )
+            progress.update(total=100, progress=70)
             positions = await self._run_in_thread(self._trader.get_positions)
             trades = await self._run_in_thread(self._trader.reconcile, signals)
 
@@ -408,13 +569,23 @@ class TradingApp(App):
                     log.write(f"[yellow]{ts} {act} {sym}[/]")
             now_str = datetime.now(self._nyc).strftime("%H:%M:%S ET")
             self.query_one("#equity-spark", Sparkline).data = self._equity_history[-50:]
+            last_ref = ""
+            if self._last_refresh is not None:
+                secs = int(time.monotonic() - self._last_refresh)
+                last_ref = f" | Last: {secs}s"
+            self._last_refresh = time.monotonic()
+            progress.display = False
+            self.query_one("#threshold-info", Static).update(
+                f"Buy: {self._buy_t:.2f}  Sell: {self._sell_t:.2f}"
+            )
             status.update(
                 f"Cycle #{self._cycle} | {now_str} | Next: ~{self._interval // 60}m | "
-                f"Buy\u2248{self._buy_t:.2f} Sell\u2248{self._sell_t:.2f}"
+                f"Buy\u2248{self._buy_t:.2f} Sell\u2248{self._sell_t:.2f}{last_ref}"
             )
             self._refresh_buttons()
             self._err_strikes = 0
         except Exception as e:
+            progress.display = False
             self._err_strikes += 1
             if self._err_strikes >= 3:
                 self.query_one("#market-dot", Static).update(
@@ -433,7 +604,7 @@ class TradingApp(App):
                 self._last_error = err
                 self._error_count = 1
                 msg = err
-            self.notify(msg, severity="error")
+            self.notify(msg, severity="error", timeout=2)
 
     async def _run_in_thread(self, fn, *args: object, **kwargs: object):
         loop = asyncio.get_running_loop()
@@ -442,13 +613,13 @@ class TradingApp(App):
     def _update_metrics(self, account: dict, positions: dict) -> None:
         prev = self._prev_equity if hasattr(self, "_prev_equity") else 0
         curr = account.get("equity", 0)
-        card = self.query_one("#metric-row").children[0]
+        equity_digits = self.query_one("#equity-digits", Digits)
         if prev and curr and curr != prev:
             cls = "flash-up" if curr > prev else "flash-down"
-            card.add_class(cls)
-            card.set_timer(0.3, lambda c=cls: card.remove_class(c))
+            equity_digits.add_class(cls)
+            equity_digits.set_timer(0.3, lambda c=cls: equity_digits.remove_class(c))
         self._prev_equity = curr
-        self.query_one("#metric-row").children[0].value = f"${curr:,.0f}"
+        equity_digits.update(f"{curr:.2f}")
         self.query_one("#metric-row").children[
             1
         ].value = f"${account.get('cash', 0):,.0f}"
@@ -491,7 +662,7 @@ class TradingApp(App):
             table.add_row(ticker, pos_str, alloc, f"{score:+.4f}", trade_str, pl_str)
 
     def action_refresh(self) -> None:
-        self.notify("Refreshing...", severity="information")
+        self.notify("Refreshing...", severity="information", timeout=2)
         self.run_worker(self._refresh_cycle(), name="cycle", exclusive=True)
 
     def _save_session(self) -> None:
@@ -514,6 +685,9 @@ class TradingApp(App):
         if self._last_session_path.exists():
             try:
                 d = json.loads(self._last_session_path.read_text())
+                if not all(k in d for k in ("interval", "buy_t", "sell_t")):
+                    logger.warning("Incomplete session data, skipping load")
+                    return
                 self._interval = d.get("interval", self._interval)
                 self._buy_t = d.get("buy_t", self._buy_t)
                 self._sell_t = d.get("sell_t", self._sell_t)
@@ -526,7 +700,9 @@ class TradingApp(App):
             self._timer.stop()
         self._timer = self.set_interval(self._interval, self._on_timer)
         self._save_session()
-        self.notify(f"Interval: {self._interval // 60}m", severity="information")
+        self.notify(
+            f"Interval: {self._interval // 60}m", severity="information", timeout=2
+        )
 
     def action_interval_down(self) -> None:
         self._interval = max(60, self._interval - 60)
@@ -534,27 +710,64 @@ class TradingApp(App):
             self._timer.stop()
         self._timer = self.set_interval(self._interval, self._on_timer)
         self._save_session()
-        self.notify(f"Interval: {self._interval // 60}m", severity="information")
+        self.notify(
+            f"Interval: {self._interval // 60}m", severity="information", timeout=2
+        )
+
+    def _apply_threshold(self, side: str, change: float) -> None:
+        """Apply a threshold change with UX16 confirmation for aggressive values."""
+        if side == "buy":
+            new_val = min(0.99, round(self._buy_t + change, 2))
+            new_val = max(0.01, new_val)
+            if new_val > 0.95 and new_val != self._buy_t:
+                self.push_screen(
+                    ThresholdConfirm(
+                        f"Buy threshold {new_val:.2f} > 0.95 is very aggressive"
+                    ),
+                    lambda ok: self._commit_threshold("buy", new_val) if ok else None,
+                )
+            else:
+                self._commit_threshold("buy", new_val)
+        else:
+            new_val = min(0.99, round(self._sell_t + change, 2))
+            new_val = max(0.01, new_val)
+            if new_val > 0.95 and new_val != self._sell_t:
+                self.push_screen(
+                    ThresholdConfirm(
+                        f"Sell threshold {new_val:.2f} > 0.95 is very aggressive"
+                    ),
+                    lambda ok: self._commit_threshold("sell", new_val) if ok else None,
+                )
+            else:
+                self._commit_threshold("sell", new_val)
+
+    def _commit_threshold(self, side: str, new_val: float) -> None:
+        if side == "buy":
+            self._buy_t = new_val
+        else:
+            self._sell_t = new_val
+        self._save_session()
+        self.notify(
+            f"{'Buy' if side == 'buy' else 'Sell'} threshold: {new_val:.2f}",
+            severity="information",
+            timeout=2,
+        )
+        self.query_one("#threshold-info", Static).update(
+            f"Buy: {self._buy_t:.2f}  Sell: {self._sell_t:.2f}"
+        )
+        self._preview_threshold()
 
     def action_threshold_up(self) -> None:
-        self._buy_t = min(0.99, round(self._buy_t + 0.05, 2))
-        self._save_session()
-        self.notify(f"Buy threshold: {self._buy_t:.2f}", severity="information")
+        self._apply_threshold("buy", 0.05)
 
     def action_threshold_down(self) -> None:
-        self._buy_t = max(0.01, round(self._buy_t - 0.05, 2))
-        self._save_session()
-        self.notify(f"Buy threshold: {self._buy_t:.2f}", severity="information")
+        self._apply_threshold("buy", -0.05)
 
     def action_sell_threshold_up(self) -> None:
-        self._sell_t = min(0.99, round(self._sell_t + 0.05, 2))
-        self._save_session()
-        self.notify(f"Sell threshold: {self._sell_t:.2f}", severity="information")
+        self._apply_threshold("sell", 0.05)
 
     def action_sell_threshold_down(self) -> None:
-        self._sell_t = max(0.01, round(self._sell_t - 0.05, 2))
-        self._save_session()
-        self.notify(f"Sell threshold: {self._sell_t:.2f}", severity="information")
+        self._apply_threshold("sell", -0.05)
 
     def action_toggle_asset(self) -> None:
         self._switch_asset("crypto" if self._asset_class == "stocks" else "stocks")
@@ -564,6 +777,22 @@ class TradingApp(App):
 
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def action_liquidate(self) -> None:
+        def on_confirm(result: bool) -> None:
+            if result:
+                try:
+                    self._trader.trade_client.close_all_positions()
+                    positions = self._trader.get_positions()
+                    for ticker in positions:
+                        self._trader.cancel_open_orders(ticker)
+                    self.notify(
+                        "All positions liquidated", severity="information", timeout=3
+                    )
+                except Exception as e:
+                    self.notify(f"Liquidation failed: {e}", severity="error", timeout=3)
+
+        self.push_screen(LiquidateConfirm(), on_confirm)
 
 
 def main() -> None:

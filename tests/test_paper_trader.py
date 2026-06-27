@@ -32,7 +32,8 @@ def cfg() -> Config:
 def trader(cfg: Config) -> PaperTrader:
     t = PaperTrader(cfg)
     t.trade_client = MagicMock()
-    t.data_client = MagicMock()
+    t._stock_client = MagicMock()  # noqa: SLF001
+    t._crypto_client = MagicMock()  # noqa: SLF001
     t.trade_client.get_clock.return_value.is_open = True
     t.trade_client.get_orders.return_value = []
     return t
@@ -67,7 +68,7 @@ def _quote(ask: float | None, bid: float | None = None):
 
 
 def _set_quotes(trader: PaperTrader, prices: dict[str, float | None]) -> None:
-    """Configure trader.data_client.get_stock_latest_quote to return the prices map.
+    """Configure trader._stock_client.get_stock_latest_quote to return the prices map.
 
     `MagicMock(sym=...)` sets up attributes, NOT dict-style `.get('.sym')` lookups,
     so we override `.get` with `side_effect` to emulate the real Alpaca response
@@ -79,7 +80,7 @@ def _set_quotes(trader: PaperTrader, prices: dict[str, float | None]) -> None:
     quotes = {sym: _quote(ask=price) for sym, price in prices.items()}
     response = MagicMock()
     response.get.side_effect = lambda sym, default=None: quotes.get(sym, default)
-    trader.data_client.get_stock_latest_quote.return_value = response
+    trader._stock_client.get_stock_latest_quote.return_value = response  # noqa: SLF001
 
 
 def _set_account(trader: PaperTrader, equity: float) -> None:
@@ -266,7 +267,7 @@ def test_no_quotes_calls_when_no_new_buys(trader: PaperTrader) -> None:
             "TSLA": {"signal": "HOLD", "score": 0.0},
         }
     )
-    trader.data_client.get_stock_latest_quote.assert_not_called()
+    trader._stock_client.get_stock_latest_quote.assert_not_called()  # noqa: SLF001
     # GetOrdersRequest should never have been called (no actionable signals).
     for call in trader.trade_client.get_orders.call_args_list:
         assert call.kwargs.get("filter") is None, (
@@ -298,3 +299,49 @@ def test_cancel_only_targets_buy_sell_tickers(trader: PaperTrader) -> None:
     assert cancel_symbols_seen == {"AAPL", "TSLA"}, (
         f"Cancel scope should be exactly BUY/SELL tickers, got: {cancel_symbols_seen}"
     )
+
+
+# ───────────────────────── N-TEST-GAP-1: coverage gaps ─────────────────────────
+
+
+def test_crypto_market_open(trader: PaperTrader, cfg: Config) -> None:
+    """Crypto market_open() returns True without calling get_clock."""
+    cfg.asset_class = "crypto"
+    assert trader.market_open() is True
+    trader.trade_client.get_clock.assert_not_called()
+
+
+def test_buy_blocked_when_short_position_exists(trader: PaperTrader) -> None:
+    """BUY signal on a ticker with a short position is skipped (no-pyramid)."""
+    trader.trade_client.get_all_positions.return_value = [
+        _position("TSLA", -10, side="short")
+    ]
+    _set_account(trader, equity=100_000.0)
+    trades = trader.reconcile({"TSLA": {"signal": "BUY", "score": 0.9}})
+    assert len(trades) == 0
+    trader.trade_client.submit_order.assert_not_called()
+
+
+def test_no_ask_zero_price(
+    trader: PaperTrader, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Ask price of 0 also triggers NO_ASK."""
+    _set_account(trader, equity=100_000.0)
+    trader.trade_client.get_all_positions.return_value = []
+    _set_quotes(trader, {"AAPL": 0.0})
+    with caplog.at_level("WARNING"):
+        trades = trader.reconcile({"AAPL": {"signal": "BUY", "score": 0.9}})
+    assert trades == [("AAPL", 0, "NO_ASK")]
+
+
+def test_reconcile_floor_match_display(trader: PaperTrader) -> None:
+    """Reconcile math.floor(abs(qty)) matches _update_table display logic."""
+    import math
+
+    trader.trade_client.get_all_positions.return_value = [_position("AAPL", 5.7)]
+    _set_quotes(trader, {"AAPL": 200.0})
+    _set_account(trader, equity=100_000.0)
+    held = math.floor(abs(5.7))
+    trader.reconcile({"AAPL": {"signal": "SELL", "score": -0.9}})
+    sent_order = trader.trade_client.submit_order.call_args.kwargs["order_data"]
+    assert sent_order.qty == held

@@ -95,6 +95,7 @@ class Config:
     pretrain_top_n_days: int = 3
     pretrain_weights_path: str = "data/models/pretrain/best.pt"
 
+    tickers_file: str = ""
     alpaca_api_key: str = ""
     asset_class: str = "stocks"
     crypto_pairs: str = "top10"
@@ -104,6 +105,8 @@ class Config:
     trade_max_position_pct: float = 0.02
     trade_buy_qty: int = 10
     trade_sell_qty: int = 10
+    max_portfolio_pct: float = 0.5
+    no_amp: bool = False
 
 
 CRYPTO_TOP10 = [

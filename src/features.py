@@ -92,6 +92,7 @@ def build_targets(
     dates: list[str],
     max_return: float,
     clip_extreme: bool = True,
+    clip_per_ticker: bool = True,
 ) -> np.ndarray:
     print("Computing training targets (next-day returns)...")
     n_dates, n_stocks = len(dates), len(tickers)
@@ -112,11 +113,21 @@ def build_targets(
             ret = (next_close - cur_close) / cur_close
             targets[i, j] = np.clip(ret / max_return, -1, 1)
     if clip_extreme:
-        flat = targets.flatten()
-        valid = flat[~np.isnan(flat)]
-        lower = np.quantile(valid, LABEL_CLIP_PCT)
-        upper = np.quantile(valid, 1 - LABEL_CLIP_PCT)
-        targets = np.clip(targets, lower, upper)
+        if clip_per_ticker:
+            for j in range(n_stocks):
+                col = targets[:, j]
+                valid = col[~np.isnan(col)]
+                if len(valid) == 0:
+                    continue
+                lower = np.quantile(valid, LABEL_CLIP_PCT)
+                upper = np.quantile(valid, 1 - LABEL_CLIP_PCT)
+                targets[:, j] = np.clip(col, lower, upper)
+        else:
+            flat = targets.flatten()
+            valid = flat[~np.isnan(flat)]
+            lower = np.quantile(valid, LABEL_CLIP_PCT)
+            upper = np.quantile(valid, 1 - LABEL_CLIP_PCT)
+            targets = np.clip(targets, lower, upper)
     targets[np.isnan(targets)] = 0.0
     return targets
 

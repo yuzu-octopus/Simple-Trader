@@ -19,7 +19,7 @@ from src.features import (
     save_cached_features,
 )
 from src.inference import run_inference
-from src.paper_trader import PaperTrader
+from src.paper_trader import PaperTrader, setup_logger
 from src.utils import load_threshold
 from trade import build_layout, make_trade_table
 from training.threshold import run_threshold_optimization
@@ -460,6 +460,17 @@ def main() -> None:
         default="top10",
         help="Number of crypto pairs (default: top10)",
     )
+    parser.add_argument(
+        "--no-amp",
+        action="store_true",
+        help="Disable automatic mixed precision",
+    )
+    parser.add_argument(
+        "--tickers-file",
+        type=str,
+        default="",
+        help="Path to a file with one ticker per line (overrides Config.tickers)",
+    )
     args = parser.parse_args()
 
     if args.colab_template:
@@ -482,6 +493,9 @@ def main() -> None:
     config = Config()
     config.asset_class = args.asset_class
     config.crypto_pairs = args.crypto_pairs
+    config.no_amp = args.no_amp
+    config.tickers_file = args.tickers_file
+    setup_logger()
     if config.asset_class == "crypto":
         from config import CRYPTO_PAIR_MAP
 
@@ -490,6 +504,10 @@ def main() -> None:
         config.features_path = "data/crypto/features"
         config.model_save_path = "data/models/crypto/best.pt"
         print(f"Loaded {len(config.tickers)} crypto pairs ({config.crypto_pairs})")
+    if args.tickers_file:
+        with Path(args.tickers_file).open() as f:
+            config.tickers = [line.strip() for line in f if line.strip()]
+        print(f"Loaded {len(config.tickers)} tickers from {args.tickers_file}")
     if args.model:
         config.model_save_path = f"data/models/{args.model}/best.pt"
     if not config.tickers:

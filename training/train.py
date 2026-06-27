@@ -55,11 +55,7 @@ def load_checkpoint(
 
 
 def portfolio_mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Penalizes portfolio return deviation from 1.0.
-
-    Heuristic approximation: encourages prediction*return correlation.
-    Does NOT directly optimize Sharpe ratio (variance is ignored).
-    """
+    """Penalizes portfolio return deviation from 1.0 (return prediction only, ignores variance)."""
     portfolio_return = (pred * target).sum(dim=1)
     return ((1 - portfolio_return) ** 2).mean()
 
@@ -146,7 +142,7 @@ def train(
         if get_rank() == 0:
             print(f"  Loaded pre-trained weights from {pretrain_path}")
     Path(config.model_save_path).parent.mkdir(parents=True, exist_ok=True)
-    use_amp = device.type in ("cuda", "mps")
+    use_amp = device.type in ("cuda", "mps") and not config.no_amp
     amp_scaler = torch.amp.GradScaler(device.type) if use_amp else None
 
     if loss_mode == "msrr":

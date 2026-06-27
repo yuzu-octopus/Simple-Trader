@@ -21,9 +21,48 @@ def invalidate_inference_cache() -> None:
     _raw_data_cache.clear()
 
 
+# ponytail: hardcoded NYSE holidays, update yearly
+NYSE_HOLIDAYS: set[tuple[int, int]] = {
+    (1, 1),  # New Year's Day
+    (7, 4),  # Independence Day
+    (12, 25),  # Christmas
+}
+
+
+def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> int:
+    """Return the day of the Nth weekday of a given month (weekday 0=Mon)."""
+    first = datetime(year, month, 1, tzinfo=UTC)
+    offset = (weekday - first.weekday()) % 7
+    return 1 + offset + 7 * (n - 1)
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int) -> int:
+    """Return the day of the last weekday of a given month."""
+    last = (
+        datetime(year, month + 1, 1, tzinfo=UTC)
+        if month < 12
+        else datetime(year + 1, 1, 1, tzinfo=UTC)
+    )
+    last -= timedelta(days=1)
+    offset = (weekday - last.weekday()) % 7
+    return last.day - offset
+
+
+def _is_nyse_holiday(d: datetime.date) -> bool:
+    """Return True if d is a NYSE holiday."""
+    fixed = {
+        (1, _nth_weekday_of_month(d.year, 1, 0, 3)),  # MLK Day: 3rd Mon of Jan
+        (2, _nth_weekday_of_month(d.year, 2, 0, 3)),  # Presidents Day: 3rd Mon of Feb
+        (5, _last_weekday_of_month(d.year, 5, 0)),  # Memorial Day: last Mon of May
+        (9, _nth_weekday_of_month(d.year, 9, 0, 1)),  # Labor Day: 1st Mon of Sep
+        (11, _nth_weekday_of_month(d.year, 11, 3, 4)),  # Thanksgiving: 4th Thu of Nov
+    }
+    return (d.month, d.day) in NYSE_HOLIDAYS | fixed
+
+
 def _last_business_day() -> str:
     d = datetime.now(UTC).date() - timedelta(days=1)
-    while d.weekday() >= 5:
+    while d.weekday() >= 5 or _is_nyse_holiday(d):
         d -= timedelta(days=1)
     return str(d)
 

@@ -1,7 +1,11 @@
 import logging
 import math
 import os
+import time
+from collections.abc import Callable
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from alpaca.data import CryptoHistoricalDataClient, StockHistoricalDataClient
@@ -15,6 +19,34 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
+def _retry(
+    fn: Callable[..., object], *args: object, max_tries: int = 3, **kwargs: object
+) -> object:
+    for attempt in range(max_tries):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            if attempt == max_tries - 1:
+                raise
+            wait = 2**attempt
+            logger.warning("Retry %s/%d: %s", attempt + 1, max_tries, e)
+            time.sleep(wait)
+    return None
+
+
+def setup_logger(log_file: str = "data/trading_bot.log") -> None:
+    """Configure root logger with a RotatingFileHandler (10 MB, 5 backups)."""
+    p = Path(log_file)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+
+
 class PaperTrader:
     def __init__(self, config: Config) -> None:
         key = config.alpaca_api_key or os.environ.get("ALPACA_API_KEY", "")
@@ -24,10 +56,8 @@ class PaperTrader:
             raise ValueError(msg)
         self.config = config
         self.trade_client = TradingClient(key, secret, paper=config.alpaca_paper)
-        if config.asset_class == "crypto":
-            self.data_client = CryptoHistoricalDataClient()
-        else:
-            self.data_client = StockHistoricalDataClient(key, secret)
+        self._stock_client = StockHistoricalDataClient(key, secret)
+        self._crypto_client = CryptoHistoricalDataClient()
         self.nyc = ZoneInfo("America/New_York")
         self._positions_cache: dict[str, dict] = {}
         self._account_cache: dict = {}
@@ -64,12 +94,10 @@ class PaperTrader:
         try:
             if self.config.asset_class == "crypto":
                 req = CryptoLatestQuoteRequest(symbol_or_symbols=symbols)
+                quotes = _retry(self._crypto_client.get_crypto_latest_quote, req)
             else:
                 req = StockLatestQuoteRequest(symbol_or_symbols=symbols)
-            if self.config.asset_class == "crypto":
-                quotes = self.data_client.get_crypto_latest_quote(req)
-            else:
-                quotes = self.data_client.get_stock_latest_quote(req)
+                quotes = _retry(self._stock_client.get_stock_latest_quote, req)
         except Exception as e:
             logger.warning("Quote fetch failed: %s", e)
             return {}
@@ -99,15 +127,19 @@ class PaperTrader:
 
     def cancel_open_orders(self, symbol: str) -> None:
         try:
-            orders = self.trade_client.get_orders(
-                filter=GetOrdersRequest(symbols=[symbol])
+            orders = _retry(
+                self.trade_client.get_orders,
+                filter=GetOrdersRequest(symbols=[symbol]),
             )
         except Exception as e:
             logger.warning("Failed to fetch open orders: %s", e)
             return
         for o in orders:
             try:
-                self.trade_client.cancel_order_by_id(order_id=o.id)  # type: ignore[union-attr]
+                _retry(
+                    self.trade_client.cancel_order_by_id,
+                    order_id=o.id,  # type: ignore[union-attr]
+                )
             except Exception as e:
                 logger.warning("Cancel failed for %s: %s", o.symbol, e)  # type: ignore[union-attr]
 
@@ -120,13 +152,13 @@ class PaperTrader:
             if self.config.asset_class == "crypto"
             else TimeInForce.DAY,
         )
-        return self.trade_client.submit_order(order_data=order)
+        return _retry(self.trade_client.submit_order, order_data=order)
 
     def reconcile(self, signals: dict[str, dict]) -> list:
         """Reconcile signals with the broker. Returns a list of trade tuples.
 
         Each tuple is `(ticker, qty, action)` where action is one of
-        `BUY` / `SELL` / `NO_EQUITY` / `MAX_POS_CAP` / `*_FAIL:<exc>`.
+        `BUY` / `SELL` / `NO_EQUITY` / `MAX_POS_CAP` / `PORTFOLIO_CAP` / `*_FAIL:<exc>`.
 
         Semantics note on the equity checks: when `account.equity <= 0`,
         `qty * ask` would always trip `MAX_POS_CAP` since `max_pos_value`
@@ -138,6 +170,11 @@ class PaperTrader:
         trades = []
         equity = float(account.get("equity") or 0.0)
         max_pos_value = max(0.0, equity * self.config.trade_max_position_pct)
+
+        existing_notional = sum(p["market_value"] for p in positions.values())
+        portfolio_capped = (
+            equity > 0 and existing_notional > equity * self.config.max_portfolio_pct
+        )
 
         # Only cancel orders for tickers we are about to act on. Skipping HOLD
         # tickers saves up to ~480 Alpaca calls per cycle on a full-universe
@@ -173,6 +210,10 @@ class PaperTrader:
                         "No usable ask for %s; refusing buy without cap check", ticker
                     )
                     trades.append((ticker, 0, "NO_ASK"))
+                    continue
+                if portfolio_capped:
+                    existing_pct = existing_notional / equity
+                    trades.append((ticker, 0, f"PORTFOLIO_CAP:{existing_pct:.0%}"))
                     continue
                 if qty * ask > max_pos_value:
                     trades.append((ticker, 0, "MAX_POS_CAP"))
