@@ -29,7 +29,10 @@ def _last_business_day() -> str:
 
 
 def run_inference(
-    config: Config, buy_threshold: float = 0.5, sell_threshold: float = 0.5
+    config: Config,
+    buy_threshold: float = 0.5,
+    sell_threshold: float = 0.5,
+    model: torch.nn.Module | None = None,
 ) -> dict[str, dict]:
     target = _last_business_day()
     cache_key = (tuple(config.tickers), target)
@@ -66,7 +69,8 @@ def run_inference(
         1, -1, config.n_features
     )
 
-    model = load_model(config)
+    if model is None:
+        model = load_model(config)
     device = next(model.parameters()).device
     with torch.no_grad():
         inp = torch.tensor(scaled, dtype=torch.float32).to(device)
