@@ -2,6 +2,7 @@
 # ruff: noqa: E402
 
 import logging
+import math
 import os
 import sys
 
@@ -280,7 +281,7 @@ class TradingApp(App):
         self._asset_class = config.asset_class
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Header(show_clock=True, sub_title="PAPER TRADING")
         with Horizontal(id="asset-row"):
             yield Static("", id="market-dot")
             yield Static("Trading:", id="asset-label")
@@ -466,7 +467,8 @@ class TradingApp(App):
             score = info["score"]
             pos = positions.get(ticker)
             t = trade_map.get(ticker)
-            pos_str = str(round(pos["qty"])) if pos else "\u2014"
+            held = math.floor(abs(pos["qty"])) if pos else 0
+            pos_str = str(held) if pos else "\u2014"
             alloc = (
                 f"{pos['market_value'] / equity * 100:.1f}%"
                 if pos and equity > 0

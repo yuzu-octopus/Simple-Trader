@@ -44,7 +44,7 @@ def evaluate_model(seed_path: Path) -> float | None:
     from src.utils import create_model, load_scaler, scale_features, unwrap_model
     from training.threshold import optimize_threshold
 
-    feat_path = Path("data/features/val.npz")
+    feat_path = Path("data/features/test.npz")
     scaler_path = Path("data/features/scaler.json")
     if not feat_path.exists() or not scaler_path.exists():
         return None
