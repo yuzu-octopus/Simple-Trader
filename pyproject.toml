@@ -65,6 +65,8 @@ module = [
     "src.data_pipeline",
     "src.utils",
     "src.paper_trader",
+    "src.crypto_pipeline",
+    "src.inference",
     "training.train",
     "training.threshold",
     "trade",

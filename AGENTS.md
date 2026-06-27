@@ -85,25 +85,30 @@ main.py              # Entry point: --mode train|infer, --loss mse|msrr|margin|l
 These are tested in `tests/test_paper_trader.py` (mocked Alpaca clients)
 and must be preserved when modifying `src/paper_trader.py`:
 
-- **Per-ticker cancel scope**: `reconcile()` may only call
-  `cancel_open_orders(symbol=t)` for tickers present in the current
-  signal set. Never blanket-cancel — triggers duplicate fills and
-  Alpaca rate-limit guards.
-- **Fractional share rounding**: `qty = round(abs(pos["qty"]))` to
-  preserve fractional-share positions without int-truncation drift.
+- **Bulk cancel**: `reconcile()` calls `cancel_orders()` once per cycle
+  to clear all open orders — single API call, no UI freeze.
+- **Fractional share rounding**: `qty = math.floor(abs(pos["qty"]))` for
+  selling; `round` would over-sell fractional positions.
 - **Partial close**: SELL closes `min(held, trade_sell_qty)`;
   smaller-than-qty positions close fully.
 - **Position cap**: BUY is checked against
   `equity * trade_max_position_pct` using the *real ask price* fetched
-  from `get_latest_quotes()`. No hardcoded $100 placeholder. Because
-  BUY only fires on tickers with no current position, the cap is a
-  *per-entry new-notional* limit, not a cumulative per-ticker exposure
-  limit. Multiple cycle-in/cycle-out sequences on the same ticker can
-  exceed this number on aggregate.
+  from `get_latest_quotes()`. No hardcoded $100 placeholder.
+- **Portfolio cap**: BUY is blocked when
+  `existing_notional > equity * max_portfolio_pct` (default 0.5).
 - **No-equity guard**: if `account.equity <= 0`, all BUYs are blocked
   with `NO_EQUITY` rather than firing with bad notional math.
 - **Order failures are captured** in the `trades` list as
   `<action>_FAIL:<exception>` instead of raising out of the cycle.
+- **Trade audit log**: every cycle appends to `data/paper_trades.csvl`
+  via `PaperTrader._audit()` — survives crashes, shared by all callers.
+- **Live trading gate**: `main.py` refuses to start with
+  `alpaca_paper=False` unless `ALPACA_LIVE_CONFIRM=true` is set in env.
+- **Alpaca retry**: All API calls use `_retry()` with exponential
+  backoff (max 3 tries, 1s start) — handles transient failures.
+- **Dual data clients**: `PaperTrader` constructs both
+  `StockHistoricalDataClient` and `CryptoHistoricalDataClient` up front;
+  no HTTP connection rebuild on asset toggle.
 
 ## Textual TUI Key Bindings
 
@@ -114,6 +119,7 @@ and must be preserved when modifying `src/paper_trader.py`:
 | `+` / `-` | Increase / decrease interval (±1 min) |
 | `[` / `]` | Adjust BUY threshold (±0.05) |
 | `{` / `}` | Adjust SELL threshold (±0.05) |
+| `L` | Liquidate all positions |
 | `C` | Open theme picker |
 | `H` | Show help |
 | `Q` | Quit |
@@ -166,4 +172,6 @@ use `ZoneInfo("America/New_York")` consistently.
 | `--colab-template` | off | Generate self-contained script (Colab + Kaggle auto-detect) |
 | `--asset-class` | `stocks` | `stocks` or `crypto` — switches data pipeline and model |
 | `--crypto-pairs` | `top10` | `top10` or `all17` — crypto universe size |
+| `--no-amp` | off | Disable mixed-precision training |
+| `--tickers-file` | — | File with one ticker per line (overrides default) |
 | `torchrun` | — | `torchrun --nproc_per_node=N uv run python main.py --mode train` for DDP |

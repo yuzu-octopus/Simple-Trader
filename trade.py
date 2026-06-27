@@ -31,6 +31,19 @@ _THEME = Theme(
 console = None
 
 
+class _NoopLive:
+    """Context manager stub for headless mode — matches Live's __exit__."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        pass
+
+    def update(self, *args: object, **kwargs: object) -> None:
+        pass
+
+
 def _score_color(score: float) -> str:
     if score > 0.3:
         return "bold success"
@@ -193,72 +206,75 @@ def main():
         sell_t = args.sell_threshold
 
     if not args.headless:
-        console = Console(theme=_THEME)
+        Console(theme=_THEME)  # init theme for Rich
 
     trader = PaperTrader(config)
     nyc = ZoneInfo("America/New_York")
     equity_history = []
-    t0 = make_trade_table({}, {}, {}, {"equity": 0}, 0, 0, "", [])
-    live = (
-        Live(build_layout(t0), screen=True, refresh_per_second=4)
+
+    live_ctx = (
+        Live(
+            build_layout(make_trade_table({}, {}, {}, {"equity": 0}, 0, 0, "", [])),
+            screen=True,
+            refresh_per_second=4,
+        )
         if not args.headless
-        else None
+        else _NoopLive()
     )
+    with live_ctx as live:
+        cycle = 0
+        while True:
+            try:
+                cycle += 1
+                now = datetime.now(nyc)
+                now_str = now.strftime("%Y-%m-%d %H:%M:%S ET")
 
-    cycle = 0
-    while True:
-        try:
-            cycle += 1
-            now = datetime.now(nyc)
-            now_str = now.strftime("%Y-%m-%d %H:%M:%S ET")
+                if not trader.market_open():
+                    nxt = trader.next_open()
+                    wait = (
+                        nxt.replace(tzinfo=None) - now.replace(tzinfo=None)
+                    ).total_seconds()
+                    wait_m = max(1, int(wait / 60))
+                    print(f"Market closed. Next open ~{wait_m} min")
+                    time.sleep(max(0.0, min(wait, 300)))
+                    continue
 
-            if not trader.market_open():
-                nxt = trader.next_open()
-                wait = (
-                    nxt.replace(tzinfo=None) - now.replace(tzinfo=None)
-                ).total_seconds()
-                wait_m = max(1, int(wait / 60))
-                print(f"Market closed. Next open ~{wait_m} min")
-                time.sleep(max(0.0, min(wait, 300)))
-                continue
+                account = trader.get_account()
+                equity_history.append(account.get("equity", 0))
+                if len(equity_history) > 100:
+                    equity_history.pop(0)
 
-            account = trader.get_account()
-            equity_history.append(account.get("equity", 0))
-            if len(equity_history) > 100:
-                equity_history.pop(0)
-
-            signals = run_inference(config, buy_threshold=buy_t, sell_threshold=sell_t)
-            positions = trader.get_positions()
-            trades = trader.reconcile(signals)
-
-            if not args.headless and live:
-                table = make_trade_table(
-                    signals,
-                    positions,
-                    trades,
-                    account,
-                    cycle,
-                    args.interval * 60,
-                    now_str,
-                    equity_history,
+                signals = run_inference(
+                    config, buy_threshold=buy_t, sell_threshold=sell_t
                 )
-                live.update(build_layout(table))
-            else:
-                n = len([t for t in trades if "FAIL" not in str(t[2])])
-                print(
-                    f"[{now_str}] Cycle #{cycle} | Equity: ${account.get('equity', 0):,.0f} | Trades: {n}"
-                )
+                positions = trader.get_positions()
+                trades = trader.reconcile(signals)
 
-            time.sleep(args.interval * 60)
+                if not args.headless:
+                    table = make_trade_table(
+                        signals,
+                        positions,
+                        trades,
+                        account,
+                        cycle,
+                        args.interval * 60,
+                        now_str,
+                        equity_history,
+                    )
+                    live.update(build_layout(table))
+                else:
+                    n = len([t for t in trades if "FAIL" not in str(t[2])])
+                    print(
+                        f"[{now_str}] Cycle #{cycle} | Equity: ${account.get('equity', 0):,.0f} | Trades: {n}"
+                    )
 
-        except KeyboardInterrupt:
-            if live:
-                live.stop()
-            break
-        except Exception as e:
-            if True:
-                console.print(f"[error]Cycle error: {e}[/error]")
-            time.sleep(30)
+                time.sleep(args.interval * 60)
+
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                print(f"Cycle error: {e}")
+                time.sleep(30)
 
 
 if __name__ == "__main__":

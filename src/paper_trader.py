@@ -61,6 +61,8 @@ class PaperTrader:
         self.nyc = ZoneInfo("America/New_York")
         self._positions_cache: dict[str, dict] = {}
         self._account_cache: dict = {}
+        self._audit_path = Path("data/paper_trades.csvl")
+        self._audit_path = Path("data/paper_trades.csvl")
 
     def get_account(self) -> dict:
         acct = self.trade_client.get_account()
@@ -176,14 +178,10 @@ class PaperTrader:
             equity > 0 and existing_notional > equity * self.config.max_portfolio_pct
         )
 
-        # Only cancel orders for tickers we are about to act on. Skipping HOLD
-        # tickers saves up to ~480 Alpaca calls per cycle on a full-universe
-        # signal set.
-        actionable = [
-            t for t, info in signals.items() if info["signal"] in ("BUY", "SELL")
-        ]
-        for ticker in actionable:
-            self.cancel_open_orders(symbol=ticker)
+        # Bulk cancel all open orders — single API call instead of per-ticker.
+        # Cancelling HOLD tickers' stale orders is harmless; they won't be re-filled
+        # this cycle since reconcile only acts on BUY/SELL signals.
+        self.trade_client.cancel_orders()
 
         buy_tickers = [
             t
@@ -238,4 +236,16 @@ class PaperTrader:
                 except Exception as e:
                     trades.append((ticker, 0, f"SELL_FAIL:{e}"))
 
+        self._audit(trades, equity)
         return trades
+
+    def _audit(self, trades: list, equity: float) -> None:
+        if not trades:
+            return
+        ts = datetime.now(self.nyc).strftime("%H:%M:%S")
+        header = not self._audit_path.exists()
+        with self._audit_path.open("a") as f:
+            if header:
+                f.write("ts,ticker,action,qty,equity\n")
+            for t in trades:
+                f.write(f"{ts},{t[0]},{t[2]},{t[1]},{equity:.2f}\n")

@@ -124,38 +124,25 @@ def test_sell_round_trips_fractional_short_position(trader: PaperTrader) -> None
     assert sent_order.side == OrderSide.BUY
 
 
-# ───────────────────────── F1.3 per-ticker cancel scoping ─────────────────────────
+# ───────────────────────── Bulk cancel (UX-N1 fix) ─────────────────────────
 
 
-def test_cancel_filters_by_signal_ticker(trader: PaperTrader) -> None:
-    """Only call cancel_open_orders(symbol=t) for tickers present in signals.
-
-    Filter requests should mention AAPL only via `symbols=['AAPL']`, never as a
-    blanket call (no `filter=` kwarg).
-    """
+def test_cancel_called_once(trader: PaperTrader) -> None:
+    """Bulk cancel_orders() is called once per reconcile, regardless of signals."""
     trader.trade_client.get_all_positions.return_value = []
     _set_quotes(trader, {"AAPL": 100.0})
     _set_account(trader, equity=100_000.0)
     trader.reconcile({"AAPL": {"signal": "BUY", "score": 0.9}})
-    filter_kwargs = [
-        c.kwargs.get("filter")
-        for c in trader.trade_client.get_orders.call_args_list
-        if c.kwargs.get("filter") is not None
-    ]
-    assert any(getattr(f, "symbols", None) == ["AAPL"] for f in filter_kwargs), (
-        f"Expected at least one cancel scoped to AAPL only, got: {filter_kwargs}"
-    )
+    trader.trade_client.cancel_orders.assert_called_once()
 
 
-def test_cancel_requires_symbol(trader: PaperTrader) -> None:
-    """cancel_open_orders now requires a symbol — no blanket-cancel path exists."""
+def test_cancel_clears_all_open_orders(trader: PaperTrader) -> None:
+    """cancel_orders() is called with no arguments = cancels everything."""
     trader.trade_client.get_all_positions.return_value = []
     _set_quotes(trader, {})
     _set_account(trader, equity=100_000.0)
     trader.reconcile({"AAPL": {"signal": "BUY", "score": 0.9}})
-    # All get_orders calls must have a symbol filter
-    for call in trader.trade_client.get_orders.call_args_list:
-        assert "symbols" in str(call), f"Unfiltered cancel call: {call}"
+    trader.trade_client.cancel_orders.assert_called_once_with()
 
 
 # ───────────────────────── F1.4 partial close bounded by trade_sell_qty ─────────────────────────
@@ -256,8 +243,7 @@ def test_buy_failure_records_trade_entry(trader: PaperTrader) -> None:
 def test_no_quotes_calls_when_no_new_buys(trader: PaperTrader) -> None:
     """If no tickers need a BUY, do not hit Alpaca for quotes (rate-limit hygiene).
 
-    HOLD-only signal sets should also NOT trigger any cancel scope (no
-    actionable tickers to cancel for).
+    Cancel_orders is still called (bulk cancel — cheap single API call).
     """
     _set_account(trader, equity=100_000.0)
     trader.trade_client.get_all_positions.return_value = [_position("AAPL", 10)]
@@ -268,37 +254,23 @@ def test_no_quotes_calls_when_no_new_buys(trader: PaperTrader) -> None:
         }
     )
     trader._stock_client.get_stock_latest_quote.assert_not_called()  # noqa: SLF001
-    # GetOrdersRequest should never have been called (no actionable signals).
-    for call in trader.trade_client.get_orders.call_args_list:
-        assert call.kwargs.get("filter") is None, (
-            f"HOLD-only reconcile should not cancel, got filter: {call.kwargs}"
-        )
+    trader.trade_client.cancel_orders.assert_called_once()
 
 
-def test_cancel_only_targets_buy_sell_tickers(trader: PaperTrader) -> None:
-    """Mixed HOLD/BUY/SELL signals — only BUY/SELL tickers get cancel scope.
-
-    HOLD tickers should never appear in any GetOrdersRequest filter.
-    """
+def test_cancel_is_universal(trader: PaperTrader) -> None:
+    """Bulk cancel_orders() runs for every reconcile, covering all tickers."""
     _set_account(trader, equity=100_000.0)
     trader.trade_client.get_all_positions.return_value = [_position("TSLA", 5)]
     _set_quotes(trader, {"AAPL": 100.0})
     trader.reconcile(
         {
-            "AAPL": {"signal": "BUY", "score": 0.9},  # actionable
-            "TSLA": {"signal": "SELL", "score": -0.9},  # actionable
-            "NFLX": {"signal": "HOLD", "score": 0.0},  # not actionable
-            "AMZN": {"signal": "HOLD", "score": 0.0},  # not actionable
+            "AAPL": {"signal": "BUY", "score": 0.9},
+            "TSLA": {"signal": "SELL", "score": -0.9},
+            "NFLX": {"signal": "HOLD", "score": 0.0},
+            "AMZN": {"signal": "HOLD", "score": 0.0},
         }
     )
-    cancel_symbols_seen = set()
-    for call in trader.trade_client.get_orders.call_args_list:
-        filt = call.kwargs.get("filter")
-        if filt is not None and getattr(filt, "symbols", None):
-            cancel_symbols_seen.update(filt.symbols)
-    assert cancel_symbols_seen == {"AAPL", "TSLA"}, (
-        f"Cancel scope should be exactly BUY/SELL tickers, got: {cancel_symbols_seen}"
-    )
+    trader.trade_client.cancel_orders.assert_called_once()
 
 
 # ───────────────────────── N-TEST-GAP-1: coverage gaps ─────────────────────────
