@@ -1,5 +1,7 @@
 import argparse
 import json
+import os
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -513,6 +515,15 @@ def main() -> None:
     if not config.tickers:
         config.tickers = get_sp500_tickers()
         print(f"Loaded {len(config.tickers)} tickers from S&P 500")
+
+    if not config.alpaca_paper:
+        confirm = os.environ.get("ALPACA_LIVE_CONFIRM", "")
+        if confirm != "true":
+            print(
+                "\n⚠ LIVE TRADING DETECTED (alpaca_paper=False).\n"
+                "Set ALPACA_LIVE_CONFIRM=true in .env to confirm.\n"
+            )
+            return
 
     has_features = Path(f"{config.features_path}/train.npz").exists()
     n_folds = 0

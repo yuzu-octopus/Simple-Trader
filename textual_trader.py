@@ -382,6 +382,7 @@ class TradingApp(App):
         self._err_strikes = 0
         self._last_error: str | None = None
         self._error_count = 0
+        self._trade_log_path = Path("data/paper_trades.csvl")
         self._last_refresh: float | None = None
         self._last_session_path = Path("data/last_session.json")
         self._load_session()
@@ -567,6 +568,17 @@ class TradingApp(App):
                     log.write(f"[red]{ts} {act} {sym}[/]")
                 elif act in ("NO_ASK", "MAX_POS_CAP", "NO_EQUITY"):
                     log.write(f"[yellow]{ts} {act} {sym}[/]")
+
+            # Append trades to audit CSV
+            if trades and self._trade_log_path:
+                header = not self._trade_log_path.exists()
+                with self._trade_log_path.open("a") as f:
+                    if header:
+                        f.write("ts,ticker,action,qty,equity\n")
+                    for t in trades:
+                        f.write(
+                            f"{ts},{t[0]},{t[2]},{t[1]},{account.get('equity', 0):.2f}\n"
+                        )
             now_str = datetime.now(self._nyc).strftime("%H:%M:%S ET")
             self.query_one("#equity-spark", Sparkline).data = self._equity_history[-50:]
             last_ref = ""
