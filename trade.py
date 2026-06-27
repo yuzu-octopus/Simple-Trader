@@ -256,7 +256,7 @@ def main():
                 live.stop()
             break
         except Exception as e:
-            if console:
+            if True:
                 console.print(f"[error]Cycle error: {e}[/error]")
             time.sleep(30)
 

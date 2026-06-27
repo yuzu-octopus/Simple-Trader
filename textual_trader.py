@@ -347,6 +347,9 @@ class TradingApp(App):
             self._config.features_path = "data/features"
             self._config.model_save_path = "data/models/best.pt"
         self._trader = PaperTrader(self._config)
+        self._equity_history.clear()
+        self._prev_equity = 0.0
+        self.query_one("#equity-spark", Sparkline).data = []
         self._refresh_buttons()
         self.notify(f"Switched to {target}", severity="information")
         self.run_worker(self._refresh_cycle(), name="switch", exclusive=True)
