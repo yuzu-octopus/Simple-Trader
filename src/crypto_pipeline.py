@@ -37,8 +37,8 @@ def fetch_crypto_data(
             try:
                 req = CryptoBarsRequest(
                     symbol_or_symbols=symbol,
-                    start=start,
-                    end=end,
+                    start=start,  # type: ignore[arg-type]
+                    end=end,  # type: ignore[arg-type]
                     timeframe=TimeFrame.Day,
                 )
                 bars = client.get_crypto_bars(req, feed=CryptoFeed.US)

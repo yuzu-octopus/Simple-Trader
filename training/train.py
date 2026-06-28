@@ -418,8 +418,8 @@ def run_training(
 
     save_scaler(scaler, f"{config.features_path}/scaler.json")
     if get_rank() == 0:
-        import json as _json  # ruff: noqa: I001
-        from datetime import UTC as _UTC  # ruff: noqa: I001
+        import json as _json
+        from datetime import UTC as _UTC
         from datetime import datetime as _dt
 
         meta = {
