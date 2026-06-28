@@ -48,7 +48,7 @@ def _last_weekday_of_month(year: int, month: int, weekday: int) -> int:
     return last.day - offset
 
 
-def _is_nyse_holiday(d: datetime.date) -> bool:
+def _is_nyse_holiday(d: date) -> bool:
     """Return True if d is a NYSE holiday."""
     fixed = {
         (1, _nth_weekday_of_month(d.year, 1, 0, 3)),  # MLK Day: 3rd Mon of Jan
@@ -60,11 +60,11 @@ def _is_nyse_holiday(d: datetime.date) -> bool:
     return (d.month, d.day) in NYSE_HOLIDAYS | fixed
 
 
-def _last_business_day() -> str:  # type: ignore[misc]
-    d = datetime.now(UTC).date() - timedelta(days=1)
-    while d.weekday() >= 5 or _is_nyse_holiday(d):
-        d -= timedelta(days=1)
-    return str(d)
+def _last_business_day() -> str:
+    _d = datetime.now(UTC).date() - timedelta(days=1)
+    while _d.weekday() >= 5 or _is_nyse_holiday(_d):
+        _d -= timedelta(days=1)
+    return str(_d)
 
 
 def run_inference(

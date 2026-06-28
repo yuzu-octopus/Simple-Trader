@@ -427,6 +427,10 @@ def run_training(
             "loss": loss_mode,
             "n_seeds": n_seeds,
             "features_path": config.features_path,
+            "scaler_path": f"{config.features_path}/scaler.json",
+            "n_features": config.n_features,
+            "n_stocks": len(config.tickers),
+            "asset_class": config.asset_class,
         }
         meta_path = Path(config.model_save_path).with_suffix(".json")
         meta_path.write_text(_json.dumps(meta, indent=2))

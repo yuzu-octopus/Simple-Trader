@@ -118,13 +118,13 @@ class PaperTrader:
         if self.config.asset_class == "crypto":
             return True
         clock = _retry(self.trade_client.get_clock)
-        return bool(clock.is_open)  # type: ignore[union-attr]  # type: ignore[union-attr]
+        return bool(clock.is_open)  # type: ignore[union-attr]
 
     def next_open(self) -> datetime:
-        return _retry(self.trade_client.get_clock).next_open  # type: ignore[union-attr]  # type: ignore[union-attr]
+        return _retry(self.trade_client.get_clock).next_open  # type: ignore[union-attr]
 
     def next_close(self) -> datetime:
-        return _retry(self.trade_client.get_clock).next_close  # type: ignore[union-attr]  # type: ignore[union-attr]
+        return _retry(self.trade_client.get_clock).next_close  # type: ignore[union-attr]
 
     def cancel_open_orders(self, symbol: str | None = None) -> None:
         if symbol is None:

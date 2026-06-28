@@ -424,7 +424,7 @@ class TradingApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        _tqdm_std.tqdm = _NoopTqdm  # type: ignore[misc]
+        _tqdm_std.tqdm = _NoopTqdm  # type: ignore[misc,assignment]
         model_name = Path(self._config.model_save_path).name
         self.query_one("#model-status", Static).update(f"Model: {model_name}")
         self.query_one("#threshold-info", Static).update(
@@ -439,7 +439,7 @@ class TradingApp(App):
         self._timer = self.set_interval(self._interval, self._on_timer)
 
     def on_unmount(self) -> None:
-        _tqdm_std.tqdm = _ORIGINAL_TQDM  # type: ignore[misc]
+        _tqdm_std.tqdm = _ORIGINAL_TQDM  # type: ignore[misc,assignment]
 
     def _refresh_buttons(self) -> None:
         is_crypto = self._asset_class == "crypto"

@@ -195,6 +195,11 @@ def main() -> None:
     best_path = extract_dir / best_name
     if best_path.exists():
         shutil.copy2(best_path, MODELS_DIR / "best.pt")
+        meta_src = best_path.with_suffix(".json")
+        meta_dst = MODELS_DIR / "best.json"
+        if meta_src.exists():
+            shutil.copy2(meta_src, meta_dst)
+            print(f"  Promoted metadata sidecar: {meta_dst}")
         print(f"\n  PROMOTED: {best_name} (Sharpe {best_sharpe:.4f})")
 
     ts = datetime.now(UTC).strftime("%Y-%m-%d_%H:%M:%S")
