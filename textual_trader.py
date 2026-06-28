@@ -424,7 +424,7 @@ class TradingApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        _tqdm_std.tqdm = _NoopTqdm
+        _tqdm_std.tqdm = _NoopTqdm  # type: ignore[misc]
         model_name = Path(self._config.model_save_path).name
         self.query_one("#model-status", Static).update(f"Model: {model_name}")
         self.query_one("#threshold-info", Static).update(
@@ -439,7 +439,7 @@ class TradingApp(App):
         self._timer = self.set_interval(self._interval, self._on_timer)
 
     def on_unmount(self) -> None:
-        _tqdm_std.tqdm = _ORIGINAL_TQDM
+        _tqdm_std.tqdm = _ORIGINAL_TQDM  # type: ignore[misc]
 
     def _refresh_buttons(self) -> None:
         is_crypto = self._asset_class == "crypto"
@@ -624,12 +624,12 @@ class TradingApp(App):
         equity_digits.update(f"{curr:.2f}")
         self.query_one("#metric-row").children[
             1
-        ].value = f"${account.get('cash', 0):,.0f}"
+        ].value = f"${account.get('cash', 0):,.0f}"  # type: ignore[attr-defined]
         dc = account.get("day_change", 0)
         style = "green" if dc >= 0 else "red"
-        self.query_one("#metric-row").children[2].value = f"[{style}]${dc:+,.0f}[/]"
-        self.query_one("#metric-row").children[3].value = f"{len(positions)}"
-        self.query_one("#metric-row").children[4].value = f"#{self._cycle}"
+        self.query_one("#metric-row").children[2].value = f"[{style}]${dc:+,.0f}[/]"  # type: ignore[attr-defined]
+        self.query_one("#metric-row").children[3].value = f"{len(positions)}"  # type: ignore[attr-defined]
+        self.query_one("#metric-row").children[4].value = f"#{self._cycle}"  # type: ignore[attr-defined]
 
     def _update_table(self, table, signals, positions, trades, account):
         table.clear()

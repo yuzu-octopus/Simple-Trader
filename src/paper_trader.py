@@ -64,17 +64,17 @@ class PaperTrader:
         self._audit_path = Path("data/paper_trades.csvl")
 
     def get_account(self) -> dict:
-        acct = self.trade_client.get_account()
+        acct = _retry(self.trade_client.get_account)
         self._account_cache = {
-            "equity": float(acct.equity),
-            "cash": float(acct.cash),
-            "buying_power": float(acct.buying_power),
-            "day_change": float(acct.equity) - float(acct.last_equity),
+            "equity": float(acct.equity),  # type: ignore[attr-defined]
+            "cash": float(acct.cash),  # type: ignore[attr-defined]
+            "buying_power": float(acct.buying_power),  # type: ignore[attr-defined]
+            "day_change": float(acct.equity) - float(acct.last_equity),  # type: ignore[attr-defined]
         }
         return self._account_cache
 
     def get_positions(self) -> dict[str, dict]:
-        positions = self.trade_client.get_all_positions()
+        positions = _retry(self.trade_client.get_all_positions)
         self._positions_cache = {
             p.symbol: {
                 "qty": float(p.qty),
@@ -117,14 +117,14 @@ class PaperTrader:
     def market_open(self) -> bool:
         if self.config.asset_class == "crypto":
             return True
-        clock = self.trade_client.get_clock()
-        return bool(clock.is_open)  # type: ignore[union-attr]
+        clock = _retry(self.trade_client.get_clock)
+        return bool(clock.is_open)  # type: ignore[union-attr]  # type: ignore[union-attr]
 
     def next_open(self) -> datetime:
-        return self.trade_client.get_clock().next_open  # type: ignore[union-attr]
+        return _retry(self.trade_client.get_clock).next_open  # type: ignore[union-attr]  # type: ignore[union-attr]
 
     def next_close(self) -> datetime:
-        return self.trade_client.get_clock().next_close  # type: ignore[union-attr]
+        return _retry(self.trade_client.get_clock).next_close  # type: ignore[union-attr]  # type: ignore[union-attr]
 
     def cancel_open_orders(self, symbol: str | None = None) -> None:
         if symbol is None:

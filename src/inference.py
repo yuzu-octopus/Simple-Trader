@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -60,7 +60,7 @@ def _is_nyse_holiday(d: datetime.date) -> bool:
     return (d.month, d.day) in NYSE_HOLIDAYS | fixed
 
 
-def _last_business_day() -> str:
+def _last_business_day() -> str:  # type: ignore[misc]
     d = datetime.now(UTC).date() - timedelta(days=1)
     while d.weekday() >= 5 or _is_nyse_holiday(d):
         d -= timedelta(days=1)

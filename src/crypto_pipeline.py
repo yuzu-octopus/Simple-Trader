@@ -43,7 +43,7 @@ def fetch_crypto_data(
                 )
                 bars = client.get_crypto_bars(req, feed=CryptoFeed.US)
                 records = []
-                if symbol in bars.data:
+                if symbol in bars.data:  # type: ignore[union-attr]
                     records = [
                         {
                             "Open": bar.open,
